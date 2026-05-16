@@ -14,20 +14,21 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 
 import mujoco
-from examples import EXAMPLES
-from widgets import ShortcutsDialog, LogPanel, log, log_emitter
+from constants import EXAMPLES, CAMERA_PRESETS
+from widgets import ShortcutsDialog, LogPanel, FPSGraph, log, log_emitter
 from viewport import MujocoViewport
 from joint_panel import JointPanel
 from actuator_panel import ActuatorPanel
-from scene_panels import BodyTreePanel, EnergyPanel, ContactsPanel
+from scene_panels import BodyTreePanel, EnergyPanel, ContactsPanel, WatchPanel, SensorPanel
 from config_panels import XMLEditor, RenderOptionsPanel
+from test_panel import TestPanel
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MuJoCo Viewer")
-        self.resize(1280, 800)
+        self.resize(1400, 850)
         self.model, self.data = None, None
         self.playing = False
         self.speed_factor = 1.0
@@ -47,7 +48,6 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_shortcuts()
 
-        # ── Connect logger to GUI panel ──
         log_emitter.log_signal.connect(self.log_panel.append_log)
         log.info("MuJoCo Viewer starting up")
         log.info(f"MuJoCo version: {mujoco.__version__}")
@@ -64,60 +64,88 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.viewport)
 
         right = QWidget()
-        right.setMinimumWidth(260)
-        right.setMaximumWidth(440)
+        right.setMinimumWidth(280)
+        right.setMaximumWidth(480)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
 
+        # ── Joints ──
         self.joint_panel = JointPanel()
         jscroll = QScrollArea()
         jscroll.setWidgetResizable(True)
         jscroll.setWidget(self.joint_panel)
         self.tabs.addTab(jscroll, "Joints")
 
+        # ── Actuators ──
         self.actuator_panel = ActuatorPanel()
         ascroll = QScrollArea()
         ascroll.setWidgetResizable(True)
         ascroll.setWidget(self.actuator_panel)
         self.tabs.addTab(ascroll, "Actuators")
 
+        # ── Bodies ──
         self.body_panel = BodyTreePanel()
         self.body_panel.focus_body.connect(self._focus_body)
         self.tabs.addTab(self.body_panel, "Bodies")
 
+        # ── Sensors ──
+        self.sensor_panel = SensorPanel()
+        self.tabs.addTab(self.sensor_panel, "Sensors")
+
+        # ── Watch ──
+        self.watch_panel = WatchPanel()
+        wscroll = QScrollArea()
+        wscroll.setWidgetResizable(True)
+        wscroll.setWidget(self.watch_panel)
+        self.tabs.addTab(wscroll, "Watch")
+
+        # ── Energy ──
         self.energy_panel = EnergyPanel()
         escroll = QScrollArea()
         escroll.setWidgetResizable(True)
         escroll.setWidget(self.energy_panel)
         self.tabs.addTab(escroll, "Energy")
 
+        # ── Contacts ──
         self.contacts_panel = ContactsPanel()
         self.tabs.addTab(self.contacts_panel, "Contacts")
 
+        # ── XML Editor ──
         self.xml_editor = XMLEditor()
         self.xml_editor.apply_requested.connect(self._apply_xml)
         self.tabs.addTab(self.xml_editor, "XML Editor")
 
+        # ── Options ──
         self.options_panel = RenderOptionsPanel(self.viewport)
         oscroll = QScrollArea()
         oscroll.setWidgetResizable(True)
         oscroll.setWidget(self.options_panel)
         self.tabs.addTab(oscroll, "Options")
 
-        # ── Log tab ──
+        # ── Tests ──
+        self.test_panel = TestPanel()
+        self.tabs.addTab(self.test_panel, "Tests")
+
+        # ── Log ──
         self.log_panel = LogPanel()
         self.tabs.addTab(self.log_panel, "Log")
 
         right_lay.addWidget(self.tabs)
+
+        # ── FPS Graph ──
+        self.fps_graph = FPSGraph()
+        right_lay.addWidget(self.fps_graph)
+
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
-        splitter.setSizes([900, 320])
+        splitter.setSizes([1000, 360])
         self.setCentralWidget(splitter)
 
+        # ── Status Bar ──
         self.status_time = QLabel("Time: 0.000s")
         self.status_step = QLabel("Step: 0")
         self.status_rtf = QLabel("RTF: —")
@@ -167,6 +195,17 @@ class MainWindow(QMainWindow):
         reset_act = QAction("⏮  &Reset", self)
         reset_act.triggered.connect(self._reset_sim)
         sim_menu.addAction(reset_act)
+
+        cam_menu = menubar.addMenu("&Camera")
+        for i, (name, az, el) in enumerate(CAMERA_PRESETS):
+            act = QAction(name, self)
+            act.triggered.connect(lambda checked, a=az, e=el: self.viewport.set_camera_preset(a, e))
+            cam_menu.addAction(act)
+        cam_menu.addSeparator()
+        fit_act = QAction("Fit to Scene", self)
+        fit_act.setShortcut(QKeySequence(Qt.Key_F))
+        fit_act.triggered.connect(self._fit_camera)
+        cam_menu.addAction(fit_act)
 
         help_menu = menubar.addMenu("&Help")
         shortcuts_act = QAction("&Keyboard Shortcuts", self)
@@ -226,7 +265,7 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self.btn_load = QPushButton("📂  Load File")
+        self.btn_load = QPushButton("📂  Load")
         self.btn_load.clicked.connect(self._load_model_file)
         tb.addWidget(self.btn_load)
 
@@ -244,9 +283,20 @@ class MainWindow(QMainWindow):
         self.btn_screenshot.clicked.connect(self._screenshot)
         tb.addWidget(self.btn_screenshot)
 
-        self.btn_fit = QPushButton("🎯  Fit Camera")
+        self.btn_fit = QPushButton("🎯  Fit")
         self.btn_fit.clicked.connect(self._fit_camera)
         tb.addWidget(self.btn_fit)
+
+        tb.addSeparator()
+        tb.addWidget(QLabel("  View: "))
+        self.cam_preset_combo = QComboBox()
+        self.cam_preset_combo.addItems([name for name, _, _ in CAMERA_PRESETS])
+        self.cam_preset_combo.currentIndexChanged.connect(
+            lambda idx: self.viewport.set_camera_preset(
+                CAMERA_PRESETS[idx][1], CAMERA_PRESETS[idx][2]
+            ) if 0 <= idx < len(CAMERA_PRESETS) else None
+        )
+        tb.addWidget(self.cam_preset_combo)
 
     def _build_shortcuts(self):
         QShortcut(QKeySequence(Qt.Key_Space), self, self._toggle_play)
@@ -255,6 +305,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_F), self, self._fit_camera)
         QShortcut(QKeySequence(Qt.Key_T), self, self._toggle_traces_key)
         QShortcut(QKeySequence(Qt.Key_C), self, self._clear_traces)
+        QShortcut(QKeySequence(Qt.Key_G), self, self._toggle_grid)
+        QShortcut(QKeySequence(Qt.Key_A), self, self._toggle_axis)
         QShortcut(QKeySequence("1"), self, lambda: self._set_speed_index(0))
         QShortcut(QKeySequence("2"), self, lambda: self._set_speed_index(1))
         QShortcut(QKeySequence("3"), self, lambda: self._set_speed_index(2))
@@ -263,10 +315,29 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("6"), self, lambda: self._set_speed_index(5))
         QShortcut(QKeySequence("7"), self, lambda: self._set_speed_index(6))
         QShortcut(QKeySequence("8"), self, lambda: self._set_speed_index(7))
+        for i in range(min(8, len(CAMERA_PRESETS))):
+            QShortcut(
+                QKeySequence(f"Ctrl+{i+1}"), self,
+                lambda idx=i: self._set_cam_preset(idx)
+            )
 
-    # ────────────────────────────────────────────────────────────
-    #  Model loading
-    # ────────────────────────────────────────────────────────────
+    def _set_cam_preset(self, idx):
+        if 0 <= idx < len(CAMERA_PRESETS):
+            _, az, el = CAMERA_PRESETS[idx]
+            self.viewport.set_camera_preset(az, el)
+            self.cam_preset_combo.setCurrentIndex(idx)
+
+    def _toggle_grid(self):
+        self.viewport._show_grid_overlay = not self.viewport._show_grid_overlay
+        self.options_panel.grid_overlay_cb.setChecked(self.viewport._show_grid_overlay)
+        self.viewport.render()
+
+    def _toggle_axis(self):
+        self.viewport._show_axis_overlay = not self.viewport._show_axis_overlay
+        self.options_panel.axis_overlay_cb.setChecked(self.viewport._show_axis_overlay)
+        self.viewport.render()
+
+    # ── Model loading ──────────────────────────────────────────
 
     def _load_example(self, name):
         if name in EXAMPLES:
@@ -339,16 +410,14 @@ class MainWindow(QMainWindow):
         self._set_model(model, data)
         self.viewport._toast.show_success("XML applied successfully")
 
-    # ────────────────────────────────────────────────────────────
-    #  Model setup
-    # ────────────────────────────────────────────────────────────
+    # ── Model setup ────────────────────────────────────────────
 
     def _set_model(self, model, data):
         self.model, self.data = model, data
         try:
             mujoco.mj_forward(model, data)
         except Exception as e:
-            log.error(f"mj_forward failed on model set: {e}")
+            log.error(f"mj_forward failed: {e}")
         self.playing = False
         self.btn_play.setChecked(False)
         self.btn_play.setText("▶  Play")
@@ -360,36 +429,39 @@ class MainWindow(QMainWindow):
             self.joint_panel.build(model, data)
         except Exception as e:
             log.error(f"Joint panel build error: {e}")
-
         try:
             self.actuator_panel.build(model, data)
         except Exception as e:
             log.error(f"Actuator panel build error: {e}")
-
         try:
             self.body_panel.build(model)
         except Exception as e:
             log.error(f"Body panel build error: {e}")
-
+        try:
+            self.sensor_panel.build(model, data)
+        except Exception as e:
+            log.error(f"Sensor panel build error: {e}")
+        try:
+            self.watch_panel.build(model, data)
+        except Exception as e:
+            log.error(f"Watch panel build error: {e}")
         try:
             self.options_panel.populate_cameras(model)
         except Exception as e:
-            log.error(f"Options panel camera populate error: {e}")
+            log.error(f"Options panel error: {e}")
 
         self.status_info.setText(
             f"Bodies: {model.nbody} | Joints: {model.njnt} | "
-            f"Actuators: {model.nu} | DoFs: {model.nv}"
+            f"Actuators: {model.nu} | DoFs: {model.nv} | Sensors: {model.nsensor}"
         )
         log.info(
             f"Model stats — bodies:{model.nbody} joints:{model.njnt} "
-            f"actuators:{model.nu} dofs:{model.nv}"
+            f"actuators:{model.nu} dofs:{model.nv} sensors:{model.nsensor}"
         )
         self.last_sim_time = data.time
         self.last_real_time = time.time()
 
-    # ────────────────────────────────────────────────────────────
-    #  Simulation controls
-    # ────────────────────────────────────────────────────────────
+    # ── Simulation controls ────────────────────────────────────
 
     def _toggle_play(self):
         if not self.model:
@@ -414,7 +486,7 @@ class MainWindow(QMainWindow):
                     mujoco.mj_step(self.model, self.data)
                 self._update_ui()
             except Exception as e:
-                log.error(f"Simulation step error: {e}")
+                log.error(f"Step error: {e}")
 
     def _reset_sim(self):
         if self.model and self.data:
@@ -463,13 +535,11 @@ class MainWindow(QMainWindow):
     def _clear_traces(self):
         self.viewport.clear_traces()
 
-    # ────────────────────────────────────────────────────────────
-    #  Save / Load
-    # ────────────────────────────────────────────────────────────
+    # ── Save / Load ────────────────────────────────────────────
 
     def _save_state(self):
         if self.model is None:
-            log.warning("Save state requested but no model loaded")
+            log.warning("No model loaded")
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save State", "state.npz", "NumPy Archive (*.npz)"
@@ -479,10 +549,8 @@ class MainWindow(QMainWindow):
         try:
             np.savez(
                 path,
-                qpos=self.data.qpos.copy(),
-                qvel=self.data.qvel.copy(),
-                ctrl=self.data.ctrl.copy(),
-                act=self.data.act.copy(),
+                qpos=self.data.qpos.copy(), qvel=self.data.qvel.copy(),
+                ctrl=self.data.ctrl.copy(), act=self.data.act.copy(),
                 time=np.array([self.data.time]),
             )
             self.viewport._toast.show_success(f"State saved: {os.path.basename(path)}")
@@ -493,7 +561,7 @@ class MainWindow(QMainWindow):
 
     def _load_state(self):
         if self.model is None:
-            log.warning("Load state requested but no model loaded")
+            log.warning("No model loaded")
             return
         path, _ = QFileDialog.getOpenFileName(
             self, "Load State", "", "NumPy Archive (*.npz);;All Files (*)"
@@ -504,11 +572,6 @@ class MainWindow(QMainWindow):
             state = np.load(path)
             if len(state["qpos"]) == len(self.data.qpos):
                 self.data.qpos[:] = state["qpos"]
-            else:
-                log.warning(
-                    f"qpos size mismatch: expected {len(self.data.qpos)}, "
-                    f"got {len(state['qpos'])}"
-                )
             if len(state["qvel"]) == len(self.data.qvel):
                 self.data.qvel[:] = state["qvel"]
             if "ctrl" in state and len(state["ctrl"]) == len(self.data.ctrl):
@@ -526,7 +589,7 @@ class MainWindow(QMainWindow):
 
     def _screenshot(self):
         if self.viewport._image is None:
-            log.warning("Screenshot requested but no rendered image")
+            log.warning("No rendered image for screenshot")
             return
         default_name = f"mujoco_{time.strftime('%Y%m%d_%H%M%S')}.png"
         path, _ = QFileDialog.getSaveFileName(
@@ -534,13 +597,11 @@ class MainWindow(QMainWindow):
         )
         if path:
             if self.viewport._image.save(path):
-                self.viewport._toast.show_success(
-                    f"Screenshot saved: {os.path.basename(path)}"
-                )
+                self.viewport._toast.show_success(f"Screenshot saved: {os.path.basename(path)}")
                 log.info(f"Screenshot saved: {os.path.basename(path)}")
             else:
                 self.viewport._toast.show_error("Failed to save screenshot")
-                log.error("Failed to save screenshot image")
+                log.error("Failed to save screenshot")
 
     def _show_shortcuts(self):
         dlg = ShortcutsDialog(self)
@@ -548,20 +609,18 @@ class MainWindow(QMainWindow):
 
     def _show_about(self):
         QMessageBox.about(
-            self,
-            "About MuJoCo Viewer",
+            self, "About MuJoCo Viewer",
             f"<h3>MuJoCo Viewer</h3>"
             f"<p>A professional physics simulation viewer built with "
             f"PySide6 and MuJoCo.</p>"
             f"<p>MuJoCo version: {mujoco.__version__}</p>"
             f"<p><b>Controls:</b> Left-drag = rotate, "
-            f"Middle-drag = pan, Right-drag/scroll = zoom, "
-            f"Ctrl+Click = select & drag body</p>",
+            f"Shift+Left/Middle-drag = pan, Right-drag/scroll = zoom, "
+            f"Ctrl+Click = select & drag body</p>"
+            f"<p>Right-click viewport for overlay options</p>",
         )
 
-    # ────────────────────────────────────────────────────────────
-    #  Main tick
-    # ────────────────────────────────────────────────────────────
+    # ── Main tick ──────────────────────────────────────────────
 
     def _tick(self):
         if self.model and self.data:
@@ -583,7 +642,7 @@ class MainWindow(QMainWindow):
                         self._sim_time_accumulator -= timestep
                         step_count += 1
                 except Exception as e:
-                    log.error(f"Simulation step error during playback: {e}")
+                    log.error(f"Sim step error: {e}")
                     self.playing = False
                     self.btn_play.setChecked(False)
                     self.btn_play.setText("▶  Play")
@@ -602,15 +661,23 @@ class MainWindow(QMainWindow):
         try:
             self.joint_panel.refresh()
         except Exception as e:
-            log.debug(f"Joint panel refresh error: {e}")
+            log.debug(f"Joint refresh error: {e}")
         try:
             self.energy_panel.refresh(self.model, self.data)
         except Exception as e:
-            log.debug(f"Energy panel refresh error: {e}")
+            log.debug(f"Energy refresh error: {e}")
         try:
             self.contacts_panel.refresh(self.model, self.data)
         except Exception as e:
-            log.debug(f"Contacts panel refresh error: {e}")
+            log.debug(f"Contacts refresh error: {e}")
+        try:
+            self.sensor_panel.refresh(self.data)
+        except Exception as e:
+            log.debug(f"Sensor refresh error: {e}")
+        try:
+            self.watch_panel.refresh()
+        except Exception as e:
+            log.debug(f"Watch refresh error: {e}")
         self.status_time.setText(f"Time: {self.data.time:.3f}s")
 
     def _calc_fps(self):
@@ -631,3 +698,5 @@ class MainWindow(QMainWindow):
             self.frame_count = 0
             self.last_fps_time = now
             self.status_fps.setText(f"FPS: {self.fps:.0f}")
+            self.viewport._fps = self.fps
+            self.fps_graph.add_fps(self.fps)
