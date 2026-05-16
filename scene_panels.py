@@ -1,12 +1,15 @@
-"""Body tree, watch panel, sensor panel, energy, and contacts inspector panels."""
+"""Body tree, watch panel, sensor panel, energy, keyframe, and contacts inspector panels."""
 
 import numpy as np
+from collections import deque
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QGroupBox,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
-    QHeaderView, QPushButton, QComboBox, QSpinBox,
+    QHeaderView, QPushButton, QComboBox, QSpinBox, QLineEdit,
+    QListWidget, QListWidgetItem,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QPainter, QColor, QPen
 import mujoco
 from widgets import log
 
@@ -19,19 +22,21 @@ class BodyTreePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setColumnWidth(0, 160)
-        self.tree.itemDoubleClicked.connect(self._on_double_click)
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._on_context_menu)
+        # NEW: Search filter
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Filter bodies…")
+        self.search_input.setProperty("class", "search")
+        self.search_input.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self.search_input)
+        layout.addLayout(search_row)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter:"))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["All", "Joints", "No Children"])
         self.filter_combo.setMaximumWidth(120)
+        self.filter_combo.currentIndexChanged.connect(self._apply_filter)
         filter_row.addWidget(self.filter_combo)
         filter_row.addStretch()
         expand_btn = QPushButton("Expand All")
@@ -42,13 +47,22 @@ class BodyTreePanel(QWidget):
         filter_row.addWidget(collapse_btn)
         layout.addLayout(filter_row)
 
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setColumnWidth(0, 160)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.tree)
 
         self._model = None
+        self._all_items = {}  # NEW: store items for filtering
 
     def build(self, model):
         self._model = model
         self.tree.clear()
+        self._all_items = {}
         if model is None:
             return
         items = {}
@@ -77,7 +91,17 @@ class BodyTreePanel(QWidget):
             else:
                 items[parent].addChild(item)
             items[i] = item
+            self._all_items[i] = (name, njnt, ngeom, item)  # NEW
         self.tree.expandAll()
+
+    # NEW: Apply text filter
+    def _apply_filter(self):
+        search = self.search_input.text().strip().lower()
+        for body_id, (name, njnt, ngeom, item) in self._all_items.items():
+            if not search:
+                item.setHidden(False)
+            else:
+                item.setHidden(search not in name.lower())
 
     def _on_double_click(self, item, column):
         body_id = item.data(0, Qt.UserRole)
@@ -125,6 +149,18 @@ class WatchPanel(QWidget):
 
         layout.addLayout(add_row)
 
+        # NEW: Quick-add presets
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Quick:"))
+        btn_qpos = QPushButton("All qpos")
+        btn_qpos.clicked.connect(self._add_all_qpos)
+        preset_row.addWidget(btn_qpos)
+        btn_ctrl = QPushButton("All ctrl")
+        btn_ctrl.clicked.connect(self._add_all_ctrl)
+        preset_row.addWidget(btn_ctrl)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
         self.watch_table = QTableWidget()
         self.watch_table.setColumnCount(3)
         self.watch_table.setHorizontalHeaderLabels(["Variable", "Value", ""])
@@ -150,6 +186,26 @@ class WatchPanel(QWidget):
                 return
         label = f"{cat}[{idx}]"
         self._watches.append((cat, idx, label))
+        self._rebuild_table()
+
+    # NEW: Quick add all qpos
+    def _add_all_qpos(self):
+        if self._data is None:
+            return
+        for i in range(len(self._data.qpos)):
+            exists = any(w[0] == "qpos" and w[1] == i for w in self._watches)
+            if not exists:
+                self._watches.append(("qpos", i, f"qpos[{i}]"))
+        self._rebuild_table()
+
+    # NEW: Quick add all ctrl
+    def _add_all_ctrl(self):
+        if self._data is None:
+            return
+        for i in range(len(self._data.ctrl)):
+            exists = any(w[0] == "ctrl" and w[1] == i for w in self._watches)
+            if not exists:
+                self._watches.append(("ctrl", i, f"ctrl[{i}]"))
         self._rebuild_table()
 
     def _clear_watches(self):
@@ -310,6 +366,11 @@ class EnergyPanel(QWidget):
         layout.addWidget(gk)
         layout.addWidget(gp)
         layout.addWidget(gt)
+
+        # NEW: Energy history graph
+        self._history_graph = EnergyHistoryGraph()
+        layout.addWidget(self._history_graph)
+
         layout.addStretch()
 
     def refresh(self, model, data):
@@ -333,8 +394,67 @@ class EnergyPanel(QWidget):
                 bar.setRange(int(-max_e), int(max_e))
                 bar.setValue(int(val))
                 bar.setFormat(f"{val:.2f} J")
+            # NEW: Update history graph
+            self._history_graph.add_data(ke, pe, total)
         except Exception:
             pass
+
+
+# NEW: Energy history sparkline graph
+class EnergyHistoryGraph(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(80)
+        self._ke = deque(maxlen=200)
+        self._pe = deque(maxlen=200)
+        self._total = deque(maxlen=200)
+
+    def add_data(self, ke, pe, total):
+        self._ke.append(ke)
+        self._pe.append(pe)
+        self._total.append(total)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#16161e"))
+        painter.setPen(QPen(QColor("#24283b"), 1))
+        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+
+        if len(self._total) < 2:
+            painter.setPen(QColor("#565f89"))
+            painter.setFont(QFont("Consolas", 8))
+            painter.drawText(self.rect(), Qt.AlignCenter, "Energy history")
+            painter.end()
+            return
+
+        w, h = self.width(), self.height()
+        all_vals = list(self._ke) + list(self._pe) + list(self._total)
+        min_v = min(all_vals)
+        max_v = max(all_vals)
+        span = max_v - min_v if max_v != min_v else 1.0
+
+        for data, color in [(self._ke, "#f7768e"), (self._pe, "#7aa2f7"), (self._total, "#9ece6a")]:
+            painter.setPen(QPen(QColor(color), 1.2))
+            n = len(data)
+            dx = w / max(n - 1, 1)
+            points = []
+            for i, v in enumerate(data):
+                x = int(i * dx)
+                y = h - int(((v - min_v) / span) * (h - 8)) - 4
+                points.append((x, y))
+            for i in range(len(points) - 1):
+                painter.drawLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+
+        # Legend
+        painter.setFont(QFont("Consolas", 7))
+        painter.setPen(QColor("#f7768e"))
+        painter.drawText(4, 10, "KE")
+        painter.setPen(QColor("#7aa2f7"))
+        painter.drawText(24, 10, "PE")
+        painter.setPen(QColor("#9ece6a"))
+        painter.drawText(44, 10, "Total")
+        painter.end()
 
 
 class ContactsPanel(QWidget):
@@ -342,19 +462,54 @@ class ContactsPanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+
+        # NEW: Header row with count and auto-refresh
+        header_row = QHBoxLayout()
+        self.count_lbl = QLabel("0 contacts")
+        self.count_lbl.setProperty("class", "dim")
+        header_row.addWidget(self.count_lbl)
+        header_row.addStretch()
+        self.auto_refresh_cb = QComboBox()                            # IMPROVED: refresh rate
+        self.auto_refresh_cb.addItems(["Auto", "Every 5s", "Manual"])
+        self.auto_refresh_cb.setMaximumWidth(100)
+        header_row.addWidget(self.auto_refresh_cb)
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setFixedWidth(80)
+        refresh_btn.clicked.connect(lambda: self._force_refresh())
+        header_row.addWidget(refresh_btn)
+        layout.addLayout(header_row)
+
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Geom 1", "Geom 2", "Distance", "Force"])
+        self.table.setColumnCount(5)                                  # IMPROVED: +1 for normal
+        self.table.setHorizontalHeaderLabels(["Geom 1", "Geom 2", "Distance", "Force", "Normal"])  # NEW
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
+        self._refresh_counter = 0
+        self._force_refresh_flag = False
+
+    def _force_refresh(self):
+        self._force_refresh_flag = True
+
     def refresh(self, model, data):
         if model is None or data is None:
             return
+
+        # Throttle refresh based on combo setting
+        mode = self.auto_refresh_cb.currentText()
+        if mode == "Manual" and not self._force_refresh_flag:
+            return
+        if mode == "Every 5s":
+            self._refresh_counter += 1
+            if self._refresh_counter % 300 != 0 and not self._force_refresh_flag:  # ~5s at 60fps
+                return
+
+        self._force_refresh_flag = False
         ncon = data.ncon
+        self.count_lbl.setText(f"{ncon} contact{'s' if ncon != 1 else ''}")
         self.table.setRowCount(ncon)
         for i in range(ncon):
             c = data.contact[i]
@@ -368,11 +523,154 @@ class ContactsPanel(QWidget):
             )
             self.table.setItem(i, 0, QTableWidgetItem(g1_name))
             self.table.setItem(i, 1, QTableWidgetItem(g2_name))
-            self.table.setItem(i, 2, QTableWidgetItem(f"{c.dist:.5f}"))
+            dist_item = QTableWidgetItem(f"{c.dist:.5f}")
+            # NEW: Color-code distance (green=separated, red=penetrating)
+            if c.dist < 0:
+                dist_item.setForeground(QColor("#f7768e"))
+            elif c.dist < 0.001:
+                dist_item.setForeground(QColor("#e0af68"))
+            else:
+                dist_item.setForeground(QColor("#9ece6a"))
+            self.table.setItem(i, 2, dist_item)
             try:
                 force = np.zeros(6)
                 mujoco.mj_contactForce(model, data, i, force)
                 f_norm = float(np.linalg.norm(force[:3]))
-                self.table.setItem(i, 3, QTableWidgetItem(f"{f_norm:.2f}"))
+                force_item = QTableWidgetItem(f"{f_norm:.2f}")
+                # NEW: Color-code force magnitude
+                if f_norm > 100:
+                    force_item.setForeground(QColor("#f7768e"))
+                elif f_norm > 10:
+                    force_item.setForeground(QColor("#e0af68"))
+                self.table.setItem(i, 3, force_item)
+                # NEW: Contact normal
+                normal = c.frame[:3]  # x-axis of contact frame
+                self.table.setItem(i, 4, QTableWidgetItem(
+                    f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
+                ))
             except Exception:
                 self.table.setItem(i, 3, QTableWidgetItem("—"))
+                self.table.setItem(i, 4, QTableWidgetItem("—"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# NEW: Keyframe Panel
+# ═══════════════════════════════════════════════════════════════
+
+class KeyframePanel(QWidget):
+    """Save and restore simulation keyframes (qpos, qvel, ctrl)."""
+    load_keyframe = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._model, self._data = None, None
+        self._keyframes = {}  # name -> {qpos, qvel, ctrl}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Save row
+        save_row = QHBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Keyframe name…")
+        save_row.addWidget(self.name_input)
+        save_btn = QPushButton("💾 Save")
+        save_btn.setProperty("class", "success")
+        save_btn.clicked.connect(self._save_keyframe)
+        save_row.addWidget(save_btn)
+        layout.addLayout(save_row)
+
+        # Keyframe list
+        self.kf_list = QListWidget()
+        self.kf_list.setAlternatingRowColors(True)
+        self.kf_list.itemDoubleClicked.connect(self._on_load)
+        layout.addWidget(self.kf_list)
+
+        # Action row
+        action_row = QHBoxLayout()
+        load_btn = QPushButton("📂 Load Selected")
+        load_btn.clicked.connect(lambda: self._on_load(self.kf_list.currentItem()))
+        action_row.addWidget(load_btn)
+        del_btn = QPushButton("🗑 Delete")
+        del_btn.setProperty("class", "danger")
+        del_btn.clicked.connect(self._delete_selected)
+        action_row.addWidget(del_btn)
+        clear_btn = QPushButton("Clear All")
+        clear_btn.clicked.connect(self._clear_all)
+        action_row.addWidget(clear_btn)
+        layout.addLayout(action_row)
+
+        layout.addStretch()
+
+    def build(self, model, data):
+        self._model, self._data = model, data
+        # Keep existing keyframes even when model changes
+        # but they may be incompatible — warn user
+        if self._keyframes and model is not None:
+            nq = model.nq
+            for name, kf in list(self._keyframes.items()):
+                if len(kf.get("qpos", [])) != nq:
+                    log.warning(f"Keyframe '{name}' may be incompatible with new model")
+
+    def _save_keyframe(self):
+        if self._data is None:
+            return
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"KF_{len(self._keyframes) + 1}"
+        if name in self._keyframes:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self, "Overwrite?", f"Keyframe '{name}' exists. Overwrite?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+
+        self._keyframes[name] = {
+            "qpos": self._data.qpos.copy(),
+            "qvel": self._data.qvel.copy(),
+            "ctrl": self._data.ctrl.copy(),
+            "time": float(self._data.time),
+        }
+        self._rebuild_list()
+        self.name_input.clear()
+        log.info(f"Keyframe saved: {name}")
+
+    def _on_load(self, item):
+        if item is None or self._data is None:
+            return
+        name = item.text()
+        if name not in self._keyframes:
+            return
+        kf = self._keyframes[name]
+        try:
+            if len(kf["qpos"]) == len(self._data.qpos):
+                self._data.qpos[:] = kf["qpos"]
+            if len(kf["qvel"]) == len(self._data.qvel):
+                self._data.qvel[:] = kf["qvel"]
+            if len(kf["ctrl"]) == len(self._data.ctrl):
+                self._data.ctrl[:] = kf["ctrl"]
+            self.load_keyframe.emit(kf)
+            log.info(f"Keyframe loaded: {name}")
+        except Exception as e:
+            log.error(f"Error loading keyframe '{name}': {e}")
+
+    def _delete_selected(self):
+        item = self.kf_list.currentItem()
+        if item is None:
+            return
+        name = item.text()
+        if name in self._keyframes:
+            del self._keyframes[name]
+            self._rebuild_list()
+
+    def _clear_all(self):
+        self._keyframes.clear()
+        self._rebuild_list()
+
+    def _rebuild_list(self):
+        self.kf_list.clear()
+        for name, kf in self._keyframes.items():
+            item = QListWidgetItem(f"{name}  (t={kf['time']:.2f}s)")
+            self.kf_list.addItem(item)                                   

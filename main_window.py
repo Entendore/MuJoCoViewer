@@ -2,24 +2,28 @@
 
 import time
 import os
+import json
 import numpy as np
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QToolBar, QComboBox,
     QSplitter, QScrollArea, QMessageBox, QTabWidget, QSizePolicy,
-    QSpinBox,
+    QSpinBox, QMenu,
 )
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 
 import mujoco
-from constants import EXAMPLES, CAMERA_PRESETS
+from constants import EXAMPLES, CAMERA_PRESETS, MAX_RECENT_FILES
 from widgets import ShortcutsDialog, LogPanel, FPSGraph, log, log_emitter
 from viewport import MujocoViewport
 from joint_panel import JointPanel
 from actuator_panel import ActuatorPanel
-from scene_panels import BodyTreePanel, EnergyPanel, ContactsPanel, WatchPanel, SensorPanel
+from scene_panels import (
+    BodyTreePanel, EnergyPanel, ContactsPanel, WatchPanel,
+    SensorPanel, KeyframePanel,
+)
 from config_panels import XMLEditor, RenderOptionsPanel
 from test_panel import TestPanel
 
@@ -42,6 +46,13 @@ class MainWindow(QMainWindow):
         self.last_real_time = time.time()
         self.last_sim_time = 0.0
         self.rtf = 0.0
+        self._step_count = 0                                            # NEW
+
+        # NEW: Recent files
+        self._settings = QSettings("MuJoCoViewer", "MuJoCoViewer")
+        self._recent_files = self._settings.value("recent_files", [])
+        if isinstance(self._recent_files, str):
+            self._recent_files = []
 
         self._build_ui()
         self._build_menu()
@@ -113,6 +124,14 @@ class MainWindow(QMainWindow):
         self.contacts_panel = ContactsPanel()
         self.tabs.addTab(self.contacts_panel, "Contacts")
 
+        # NEW: ── Keyframes ──
+        self.keyframe_panel = KeyframePanel()
+        self.keyframe_panel.load_keyframe.connect(self._on_keyframe_loaded)
+        kfscroll = QScrollArea()
+        kfscroll.setWidgetResizable(True)
+        kfscroll.setWidget(self.keyframe_panel)
+        self.tabs.addTab(kfscroll, "Keyframes")
+
         # ── XML Editor ──
         self.xml_editor = XMLEditor()
         self.xml_editor.apply_requested.connect(self._apply_xml)
@@ -126,7 +145,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(oscroll, "Options")
 
         # ── Tests ──
-        self.test_panel = TestPanel()
+        self.test_panel = TestPanel(self)
         self.tabs.addTab(self.test_panel, "Tests")
 
         # ── Log ──
@@ -147,7 +166,7 @@ class MainWindow(QMainWindow):
 
         # ── Status Bar ──
         self.status_time = QLabel("Time: 0.000s")
-        self.status_step = QLabel("Step: 0")
+        self.status_step = QLabel("Step: 0")                          # NEW
         self.status_rtf = QLabel("RTF: —")
         self.status_fps = QLabel("FPS: —")
         self.status_info = QLabel("")
@@ -162,11 +181,17 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         menubar = self.menuBar()
 
+        # ── File ──
         file_menu = menubar.addMenu("&File")
         load_act = QAction("&Load Model…", self)
         load_act.setShortcut(QKeySequence.Open)
         load_act.triggered.connect(self._load_model_file)
         file_menu.addAction(load_act)
+
+        # NEW: Recent files menu
+        self._recent_menu = file_menu.addMenu("Recent Files")
+        self._update_recent_menu()
+
         file_menu.addSeparator()
         save_state_act = QAction("Save &State…", self)
         save_state_act.triggered.connect(self._save_state)
@@ -174,17 +199,33 @@ class MainWindow(QMainWindow):
         load_state_act = QAction("Load S&tate…", self)
         load_state_act.triggered.connect(self._load_state)
         file_menu.addAction(load_state_act)
+
+        # NEW: Save XML
+        save_xml_act = QAction("Save &XML As…", self)
+        save_xml_act.triggered.connect(self._save_xml)
+        file_menu.addAction(save_xml_act)
+
         file_menu.addSeparator()
         screenshot_act = QAction("Save &Screenshot…", self)
-        screenshot_act.setShortcut(QKeySequence("Ctrl+S"))
+        screenshot_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
         screenshot_act.triggered.connect(self._screenshot)
         file_menu.addAction(screenshot_act)
+
+        # NEW: Record video frames
+        record_act = QAction("Start &Recording Frames…", self)
+        record_act.triggered.connect(self._toggle_recording)
+        file_menu.addAction(record_act)
+        self._recording = False
+        self._record_dir = ""
+        self._record_frame = 0
+
         file_menu.addSeparator()
         quit_act = QAction("&Quit", self)
         quit_act.setShortcut(QKeySequence.Quit)
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
+        # ── Simulation ──
         sim_menu = menubar.addMenu("&Simulation")
         self.play_act = QAction("▶  &Play", self)
         self.play_act.triggered.connect(self._toggle_play)
@@ -196,6 +237,21 @@ class MainWindow(QMainWindow):
         reset_act.triggered.connect(self._reset_sim)
         sim_menu.addAction(reset_act)
 
+        # NEW: Reload from file
+        self.reload_act = QAction("🔄  &Reload from File", self)
+        self.reload_act.triggered.connect(self._reload_model)
+        sim_menu.addAction(self.reload_act)
+
+        # NEW: Advance N steps
+        sim_menu.addSeparator()
+        advance_act = QAction("Advance 100 steps", self)
+        advance_act.triggered.connect(lambda: self._advance_n(100))
+        sim_menu.addAction(advance_act)
+        advance_act2 = QAction("Advance 1000 steps", self)
+        advance_act2.triggered.connect(lambda: self._advance_n(1000))
+        sim_menu.addAction(advance_act2)
+
+        # ── Camera ──
         cam_menu = menubar.addMenu("&Camera")
         for i, (name, az, el) in enumerate(CAMERA_PRESETS):
             act = QAction(name, self)
@@ -207,6 +263,13 @@ class MainWindow(QMainWindow):
         fit_act.triggered.connect(self._fit_camera)
         cam_menu.addAction(fit_act)
 
+        # NEW: Bookmark menu
+        cam_menu.addSeparator()
+        save_bm_act = QAction("Save Bookmark…", self)
+        save_bm_act.triggered.connect(self._save_camera_bookmark)
+        cam_menu.addAction(save_bm_act)
+
+        # ── Help ──
         help_menu = menubar.addMenu("&Help")
         shortcuts_act = QAction("&Keyboard Shortcuts", self)
         shortcuts_act.triggered.connect(self._show_shortcuts)
@@ -269,6 +332,13 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self._load_model_file)
         tb.addWidget(self.btn_load)
 
+        # NEW: Reload button
+        self.btn_reload = QPushButton("🔄")
+        self.btn_reload.setToolTip("Reload model from file (Ctrl+Shift+R)")
+        self.btn_reload.clicked.connect(self._reload_model)
+        self.btn_reload.setEnabled(False)
+        tb.addWidget(self.btn_reload)
+
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
@@ -278,6 +348,17 @@ class MainWindow(QMainWindow):
         self.btn_trace.setToolTip("Toggle body traces (T)")
         self.btn_trace.clicked.connect(self._toggle_traces)
         tb.addWidget(self.btn_trace)
+
+        # NEW: Keyframe quick buttons
+        self.btn_save_kf = QPushButton("💾 KF")
+        self.btn_save_kf.setToolTip("Save keyframe (K)")
+        self.btn_save_kf.clicked.connect(self._quick_save_keyframe)
+        tb.addWidget(self.btn_save_kf)
+
+        self.btn_load_kf = QPushButton("📂 KF")
+        self.btn_load_kf.setToolTip("Load last keyframe (Ctrl+K)")
+        self.btn_load_kf.clicked.connect(self._quick_load_keyframe)
+        tb.addWidget(self.btn_load_kf)
 
         self.btn_screenshot = QPushButton("📸  Screenshot")
         self.btn_screenshot.clicked.connect(self._screenshot)
@@ -307,6 +388,9 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_C), self, self._clear_traces)
         QShortcut(QKeySequence(Qt.Key_G), self, self._toggle_grid)
         QShortcut(QKeySequence(Qt.Key_A), self, self._toggle_axis)
+        QShortcut(QKeySequence(Qt.Key_K), self, self._quick_save_keyframe)       # NEW
+        QShortcut(QKeySequence("Ctrl+K"), self, self._quick_load_keyframe)       # NEW
+        QShortcut(QKeySequence("Ctrl+Shift+R"), self, self._reload_model)        # NEW
         QShortcut(QKeySequence("1"), self, lambda: self._set_speed_index(0))
         QShortcut(QKeySequence("2"), self, lambda: self._set_speed_index(1))
         QShortcut(QKeySequence("3"), self, lambda: self._set_speed_index(2))
@@ -320,6 +404,92 @@ class MainWindow(QMainWindow):
                 QKeySequence(f"Ctrl+{i+1}"), self,
                 lambda idx=i: self._set_cam_preset(idx)
             )
+
+    # ── Recent files ──────────────────────────────────────────  # NEW
+
+    def _add_recent_file(self, path):
+        path = os.path.abspath(path)
+        if path in self._recent_files:
+            self._recent_files.remove(path)
+        self._recent_files.insert(0, path)
+        self._recent_files = self._recent_files[:MAX_RECENT_FILES]
+        self._settings.setValue("recent_files", self._recent_files)
+        self._update_recent_menu()
+
+    def _update_recent_menu(self):
+        self._recent_menu.clear()
+        if not self._recent_files:
+            act = self._recent_menu.addAction("No recent files")
+            act.setEnabled(False)
+        else:
+            for path in self._recent_files:
+                if os.path.isfile(path):
+                    act = self._recent_menu.addAction(os.path.basename(path))
+                    act.setToolTip(path)
+                    act.triggered.connect(lambda checked, p=path: self._load_model_path(p))
+
+    # ── Camera bookmarks ──────────────────────────────────────  # NEW
+
+    def _save_camera_bookmark(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Camera Bookmark", "Bookmark name:")
+        if ok and name:
+            self.viewport.save_camera_bookmark(name)
+            self.options_panel._refresh_bookmark_combo()
+            self.viewport._toast.show_success(f"Bookmark saved: {name}")
+
+    # ── Keyframe shortcuts ────────────────────────────────────  # NEW
+
+    def _quick_save_keyframe(self):
+        if self.data is None:
+            return
+        name = f"KF_{len(self.keyframe_panel._keyframes) + 1}"
+        self.keyframe_panel.name_input.setText(name)
+        self.keyframe_panel._save_keyframe()
+        self.viewport._toast.show_success(f"Keyframe saved: {name}")
+
+    def _quick_load_keyframe(self):
+        """Load the last saved keyframe."""
+        if not self.keyframe_panel._keyframes or self.data is None:
+            self.viewport._toast.show_warning("No keyframes saved")
+            return
+        # Load the last keyframe
+        last_name = list(self.keyframe_panel._keyframes.keys())[-1]
+        kf = self.keyframe_panel._keyframes[last_name]
+        try:
+            if len(kf["qpos"]) == len(self.data.qpos):
+                self.data.qpos[:] = kf["qpos"]
+            if len(kf["qvel"]) == len(self.data.qvel):
+                self.data.qvel[:] = kf["qvel"]
+            if len(kf["ctrl"]) == len(self.data.ctrl):
+                self.data.ctrl[:] = kf["ctrl"]
+            self.viewport._toast.show_success(f"Keyframe loaded: {last_name}")
+            log.info(f"Keyframe loaded: {last_name}")
+        except Exception as e:
+            log.error(f"Error loading keyframe: {e}")
+
+    def _on_keyframe_loaded(self, kf):                                # NEW
+        """Called when a keyframe is loaded from the panel."""
+        self._update_ui()
+
+    # ── Recording ─────────────────────────────────────────────  # NEW
+
+    def _toggle_recording(self):
+        if not self._recording:
+            path = QFileDialog.getExistingDirectory(self, "Select Folder for Frames")
+            if not path:
+                return
+            self._record_dir = path
+            self._record_frame = 0
+            self._recording = True
+            self.viewport._toast.show_success("Recording started")
+            log.info(f"Recording frames to {path}")
+        else:
+            self._recording = False
+            self.viewport._toast.show_message(f"Recorded {self._record_frame} frames")
+            log.info(f"Recording stopped: {self._record_frame} frames")
+
+    # ── Navigation helpers ────────────────────────────────────
 
     def _set_cam_preset(self, idx):
         if 0 <= idx < len(CAMERA_PRESETS):
@@ -354,6 +524,7 @@ class MainWindow(QMainWindow):
             return
         self._current_xml = xml_string
         self._current_file_path = ""
+        self.btn_reload.setEnabled(False)                              # NEW
         self.xml_editor.set_xml(xml_string)
         self.xml_editor.set_validation(True, "Loaded")
         log.info("Model loaded from XML string")
@@ -387,11 +558,39 @@ class MainWindow(QMainWindow):
             xml_string = f"<!-- Loaded from {path} -->"
         self._current_xml = xml_string
         self._current_file_path = path
+        self.btn_reload.setEnabled(True)                              # NEW
         self.xml_editor.set_xml(xml_string)
         self.xml_editor.set_validation(True, f"Loaded from {os.path.basename(path)}")
         log.info(f"Model loaded from file: {os.path.basename(path)}")
         self._set_model(model, data)
+        self._add_recent_file(path)                                   # NEW
         self.viewport._toast.show_success(f"Loaded: {os.path.basename(path)}")
+
+    # NEW: Reload model from file
+    def _reload_model(self):
+        if self._current_file_path and os.path.isfile(self._current_file_path):
+            self._load_model_path(self._current_file_path)
+            self.viewport._toast.show_success("Model reloaded")
+        else:
+            self.viewport._toast.show_warning("No file to reload from")
+
+    # NEW: Save XML
+    def _save_xml(self):
+        xml_string = self.xml_editor.editor.toPlainText()
+        if not xml_string.strip():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save XML", "model.xml", "MuJoCo XML (*.xml);;All Files (*)"
+        )
+        if path:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(xml_string)
+                log.info(f"XML saved to {path}")
+                self.viewport._toast.show_success(f"XML saved: {os.path.basename(path)}")
+            except Exception as e:
+                log.error(f"Failed to save XML: {e}")
+                QMessageBox.critical(self, "Save Error", str(e))
 
     def _apply_xml(self):
         xml_string = self.xml_editor.editor.toPlainText()
@@ -414,6 +613,7 @@ class MainWindow(QMainWindow):
 
     def _set_model(self, model, data):
         self.model, self.data = model, data
+        self._step_count = 0                                          # NEW
         try:
             mujoco.mj_forward(model, data)
         except Exception as e:
@@ -445,6 +645,10 @@ class MainWindow(QMainWindow):
             self.watch_panel.build(model, data)
         except Exception as e:
             log.error(f"Watch panel build error: {e}")
+        try:
+            self.keyframe_panel.build(model, data)                    # NEW
+        except Exception as e:
+            log.error(f"Keyframe panel build error: {e}")
         try:
             self.options_panel.populate_cameras(model)
         except Exception as e:
@@ -484,9 +688,29 @@ class MainWindow(QMainWindow):
             try:
                 for _ in range(steps):
                     mujoco.mj_step(self.model, self.data)
+                self._step_count += steps                              # NEW
+                self.viewport.increment_step_count(steps)              # NEW
                 self._update_ui()
             except Exception as e:
                 log.error(f"Step error: {e}")
+
+    # NEW: Advance N steps without UI refresh per step
+    def _advance_n(self, n):
+        if not self.model or not self.data:
+            return
+        try:
+            was_playing = self.playing
+            self.playing = False
+            for _ in range(n):
+                mujoco.mj_step(self.model, self.data)
+            self._step_count += n
+            self.viewport.increment_step_count(n)
+            mujoco.mj_forward(self.model, self.data)
+            self._update_ui()
+            self.viewport._toast.show_message(f"Advanced {n} steps")
+            log.info(f"Advanced {n} steps")
+        except Exception as e:
+            log.error(f"Advance error: {e}")
 
     def _reset_sim(self):
         if self.model and self.data:
@@ -500,6 +724,8 @@ class MainWindow(QMainWindow):
             self.btn_play.setText("▶  Play")
             self.viewport._paused = False
             self._sim_time_accumulator = 0.0
+            self._step_count = 0                                      # NEW
+            self.viewport._step_count = 0                              # NEW
             self.last_sim_time = self.data.time
             self.last_real_time = time.time()
             self.viewport.clear_traces()
@@ -552,6 +778,7 @@ class MainWindow(QMainWindow):
                 qpos=self.data.qpos.copy(), qvel=self.data.qvel.copy(),
                 ctrl=self.data.ctrl.copy(), act=self.data.act.copy(),
                 time=np.array([self.data.time]),
+                step_count=np.array([self._step_count]),             # NEW
             )
             self.viewport._toast.show_success(f"State saved: {os.path.basename(path)}")
             log.info(f"State saved to {os.path.basename(path)}")
@@ -578,6 +805,9 @@ class MainWindow(QMainWindow):
                 self.data.ctrl[:] = state["ctrl"]
             if "act" in state and len(state["act"]) == len(self.data.act):
                 self.data.act[:] = state["act"]
+            if "step_count" in state:                                  # NEW
+                self._step_count = int(state["step_count"][0])
+                self.viewport._step_count = self._step_count
             mujoco.mj_forward(self.model, self.data)
             self.actuator_panel.build(self.model, self.data)
             self._update_ui()
@@ -616,7 +846,7 @@ class MainWindow(QMainWindow):
             f"<p>MuJoCo version: {mujoco.__version__}</p>"
             f"<p><b>Controls:</b> Left-drag = rotate, "
             f"Shift+Left/Middle-drag = pan, Right-drag/scroll = zoom, "
-            f"Ctrl+Click = select & drag body</p>"
+            f"Ctrl+Click = select & drag body, Double-click = focus body</p>"
             f"<p>Right-click viewport for overlay options</p>",
         )
 
@@ -651,7 +881,21 @@ class MainWindow(QMainWindow):
                 if step_count >= max_steps:
                     self._sim_time_accumulator = 0.0
 
+                self._step_count += step_count                        # NEW
+                self.viewport.increment_step_count(step_count)        # NEW
                 self.viewport.record_trace()
+
+                # NEW: Recording
+                if self._recording and self.viewport._image is not None:
+                    try:
+                        frame_path = os.path.join(
+                            self._record_dir, f"frame_{self._record_frame:06d}.png"
+                        )
+                        self.viewport._image.save(frame_path)
+                        self._record_frame += 1
+                    except Exception as e:
+                        log.error(f"Frame save error: {e}")
+                        self._recording = False
 
             self._update_ui()
             self._calc_fps()
@@ -679,6 +923,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.debug(f"Watch refresh error: {e}")
         self.status_time.setText(f"Time: {self.data.time:.3f}s")
+        self.status_step.setText(f"Step: {self._step_count}")         # NEW
 
     def _calc_fps(self):
         self.frame_count += 1
@@ -699,4 +944,12 @@ class MainWindow(QMainWindow):
             self.last_fps_time = now
             self.status_fps.setText(f"FPS: {self.fps:.0f}")
             self.viewport._fps = self.fps
-            self.fps_graph.add_fps(self.fps)
+            self.fps_graph.add_fps(self.fps, self.rtf)               # IMPROVED: pass RTF
+
+    # NEW: Clean up on close
+    def closeEvent(self, event):
+        self.timer.stop()
+        if self._recording:
+            self._recording = False
+            log.info(f"Recording stopped on close: {self._record_frame} frames")
+        event.accept()

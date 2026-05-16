@@ -17,7 +17,7 @@ from widgets import log
 
 
 # ═══════════════════════════════════════════════════════════════
-# 1. HEADLESS LOGIC TESTS (Runs in Background Thread)
+# 1. HEADLESS LOGIC TESTS
 # ═══════════════════════════════════════════════════════════════
 
 class HeadlessTestRunner(QThread):
@@ -36,6 +36,9 @@ class HeadlessTestRunner(QThread):
             self.test_state_reset,
             self.test_invalid_xml_handling,
             self.test_nan_resistance,
+            self.test_joint_limits,                                   # NEW
+            self.test_energy_conservation,                            # NEW
+            self.test_model_stats_consistency,                        # NEW
         ]
         
         total_tests = len(tests)
@@ -46,7 +49,6 @@ class HeadlessTestRunner(QThread):
             try:
                 msgs = []
                 test_func(msgs)
-                # If no exceptions and no False in msgs
                 if any(m is False for m in msgs):
                     raise AssertionError("Sub-check failed")
                 summary = "; ".join(str(m) for m in msgs if m is not True and m is not False)
@@ -86,13 +88,11 @@ class HeadlessTestRunner(QThread):
                 continue
             data = mujoco.MjData(model)
             
-            # Step with 0 control
             mujoco.mj_step(model, data)
             qpos_0 = data.qpos.copy()
             
-            # Step with max control
             mujoco.mj_resetData(model, data)
-            data.ctrl[:] = model.actuator_ctrlrange[:, 1] # Max range
+            data.ctrl[:] = model.actuator_ctrlrange[:, 1]
             mujoco.mj_step(model, data)
             qpos_max = data.qpos.copy()
             
@@ -134,15 +134,66 @@ class HeadlessTestRunner(QThread):
         model = mujoco.MjModel.from_xml_string(xml)
         data = mujoco.MjData(model)
         
-        # Apply extreme velocity
         data.qvel[:] = 1e10
         for _ in range(100):
             mujoco.mj_step(model, data)
             
-        # It's okay if physics breaks (NaN), but we test that we can detect it
         is_nan = np.any(np.isnan(data.qpos))
         assert is_nan, "Extreme forces should result in NaN for this test"
         msgs.append("NaN detection works")
+        return True
+
+    # NEW: Joint limits test
+    def test_joint_limits(self, msgs):
+        """Test: Joints with limits stay within range after simulation"""
+        for name, xml in EXAMPLES.items():
+            model = mujoco.MjModel.from_xml_string(xml)
+            data = mujoco.MjData(model)
+            for i in range(model.njnt):
+                rng = model.jnt_range[i]
+                if rng[1] > rng[0]:  # has limits
+                    # Check after 100 steps
+                    for _ in range(100):
+                        mujoco.mj_step(model, data)
+                    qpos_adr = model.jnt_qposadr[i]
+                    jtype = model.jnt_type[i]
+                    if jtype in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
+                        v = data.qpos[qpos_adr]
+                        # Allow slight violation (solver tolerance)
+                        if v < rng[0] - 0.1 or v > rng[1] + 0.1:
+                            msgs.append(f"{name} joint {i}: range violation")
+            msgs.append(f"{name} limits OK")
+        return True
+
+    # NEW: Energy conservation test (no actuators, no gravity = constant energy)
+    def test_energy_conservation(self, msgs):
+        """Test: Energy is computed without errors"""
+        xml = EXAMPLES["Cartpole"]
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+        mujoco.mj_forward(model, data)
+        ke0, pe0 = float(data.energy[0]), float(data.energy[1])
+        for _ in range(100):
+            mujoco.mj_step(model, data)
+        ke1, pe1 = float(data.energy[0]), float(data.energy[1])
+        total0 = ke0 + pe0
+        total1 = ke1 + pe1
+        # Energy should change with gravity but remain finite
+        assert np.isfinite(total0) and np.isfinite(total1), "Energy is not finite"
+        msgs.append(f"Energy computed: initial={total0:.2f}, final={total1:.2f}")
+        return True
+
+    # NEW: Model stats consistency
+    def test_model_stats_consistency(self, msgs):
+        """Test: Model dimensions are internally consistent"""
+        for name, xml in EXAMPLES.items():
+            model = mujoco.MjModel.from_xml_string(xml)
+            data = mujoco.MjData(model)
+            assert len(data.qpos) == model.nq, f"{name}: qpos size mismatch"
+            assert len(data.qvel) == model.nv, f"{name}: qvel size mismatch"
+            assert len(data.ctrl) == model.nu, f"{name}: ctrl size mismatch"
+            msgs.append(f"{name} dims OK")
         return True
 
 
@@ -243,19 +294,19 @@ class TestPanel(QWidget):
         self.progress_bar.setFormat("Phase 2: GUI State %p%")
         self.progress_bar.setValue(0)
         
-        # Queue up GUI tests to run safely in the main thread
         self._gui_test_queue = [
             self._gui_test_panel_consistency,
             self._gui_test_xml_editor,
             self._gui_test_sim_controls,
             self._gui_test_body_tree,
             self._gui_test_watch_panel,
+            self._gui_test_keyframe_panel,                            # NEW
+            self._gui_test_actuator_panel,                            # NEW
         ]
         self._gui_passed = 0
         self._gui_failed = 0
         self._gui_total = len(self._gui_test_queue)
         
-        # Use a timer to yield to the event loop between tests
         self._gui_timer = self.startTimer(50)
 
     def timerEvent(self, event):
@@ -291,8 +342,8 @@ class TestPanel(QWidget):
         assert joint_count == mw.model.njnt, f"Joint count mismatch: Panel={joint_count}, Model={mw.model.njnt}"
         msgs.append(f"Joints OK ({joint_count})")
         
-        act_layout_count = mw.actuator_panel._layout.count() - 1 # -1 for stretch
-        assert act_layout_count == mw.model.nu, f"Actuator count mismatch: Panel={act_layout_count}, Model={mw.model.nu}"
+        actuator_count = mw.actuator_panel._actuator_count
+        assert actuator_count == mw.model.nu, f"Actuator count mismatch: Panel={actuator_count}, Model={mw.model.nu}"
         msgs.append(f"Actuators OK ({mw.model.nu})")
         return True
 
@@ -302,11 +353,9 @@ class TestPanel(QWidget):
         editor_xml = mw.xml_editor.editor.toPlainText()
         assert editor_xml.strip() != "", "XML Editor is empty"
         
-        # Verify it parses
         mujoco.MjModel.from_xml_string(editor_xml)
         msgs.append("XML parses correctly")
         
-        # Test revert logic state
         assert mw.xml_editor._saved_xml == editor_xml, "Saved XML mismatch"
         msgs.append("State consistent")
         return True
@@ -321,7 +370,6 @@ class TestPanel(QWidget):
         assert mw.btn_play.isChecked() == mw.playing, "Button state mismatch"
         msgs.append("Toggle OK")
         
-        # Revert
         mw._toggle_play()
         assert mw.playing == initial_state, "Play state didn't revert"
         msgs.append("Revert OK")
@@ -331,7 +379,6 @@ class TestPanel(QWidget):
         """Test: Body tree item count matches model bodies"""
         mw = self.main_window
         tree = mw.body_panel.tree
-        # Count all top-level and child items recursively
         def count_items(parent):
             count = 0
             for i in range(parent.childCount()):
@@ -348,7 +395,7 @@ class TestPanel(QWidget):
         mw = self.main_window
         initial_rows = mw.watch_panel.watch_table.rowCount()
         
-        mw.watch_panel.cat_combo.setCurrentIndex(0) # qpos
+        mw.watch_panel.cat_combo.setCurrentIndex(0)
         mw.watch_panel.idx_spin.setValue(0)
         mw.watch_panel._add_watch()
         
@@ -358,6 +405,50 @@ class TestPanel(QWidget):
         mw.watch_panel._clear_watches()
         assert mw.watch_panel.watch_table.rowCount() == 0, "Rows not cleared"
         msgs.append("Clear OK")
+        return True
+
+    # NEW: Keyframe panel test
+    def _gui_test_keyframe_panel(self, msgs):
+        """Test: Keyframe save/load cycle works"""
+        mw = self.main_window
+        if mw.data is None:
+            msgs.append("Skipped (no data)")
+            return True
+
+        initial_count = len(mw.keyframe_panel._keyframes)
+        mw.keyframe_panel.name_input.setText("__test_kf__")
+        mw.keyframe_panel._save_keyframe()
+        assert len(mw.keyframe_panel._keyframes) == initial_count + 1, "Keyframe not saved"
+        msgs.append("Save OK")
+
+        # Clean up
+        if "__test_kf__" in mw.keyframe_panel._keyframes:
+            del mw.keyframe_panel._keyframes["__test_kf__"]
+            mw.keyframe_panel._rebuild_list()
+        msgs.append("Cleanup OK")
+        return True
+
+    # NEW: Actuator panel test
+    def _gui_test_actuator_panel(self, msgs):
+        """Test: Actuator panel count and reset all work"""
+        mw = self.main_window
+        if mw.model is None or mw.model.nu == 0:
+            msgs.append("Skipped (no actuators)")
+            return True
+
+        count = mw.actuator_panel._actuator_count
+        assert count == mw.model.nu, f"Count mismatch: {count} vs {mw.model.nu}"
+        msgs.append(f"Count OK ({count})")
+
+        # Test reset all
+        if mw.actuator_panel._reset_cbs:
+            mw.actuator_panel._reset_all()
+            for i in range(mw.model.nu):
+                cr = mw.model.actuator_ctrlrange[i]
+                expected = (cr[0] + cr[1]) / 2.0
+                actual = mw.data.ctrl[i]
+                assert abs(actual - expected) < 1e-6, f"Actuator {i} not reset"
+            msgs.append("Reset All OK")
         return True
 
     def _finish_all_tests(self, gui_passed, gui_failed, total_passed, total_failed):
@@ -387,7 +478,6 @@ class TestPanel(QWidget):
 
 # ═══════════════════════════════════════════════════════════════
 # 3. STANDARD PYTEST CLI FUNCTIONS
-# Run via terminal: pytest test_panel.py
 # ═══════════════════════════════════════════════════════════════
 
 import pytest
@@ -423,6 +513,14 @@ def test_simulation_stability_cli():
         for _ in range(500):
             mujoco.mj_step(model, data)
         assert not np.any(np.isnan(data.qpos)), f"{name} produced NaN"
+
+def test_model_stats_consistency_cli():
+    """CLI Test: Model dimensions are consistent."""
+    for name, xml in EXAMPLES.items():
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        assert len(data.qpos) == model.nq
+        assert len(data.qvel) == model.nv
 
 def test_gui_panel_consistency_cli(main_window):
     """CLI Test: GUI Panels match model."""

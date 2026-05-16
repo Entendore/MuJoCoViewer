@@ -30,6 +30,14 @@ QPOS_DIMS = {
     mujoco.mjtJoint.mjJNT_HINGE: 1,
 }
 
+# ── Actuator type display names ───────────────────────────────  # NEW
+ACTUATOR_TYPE_NAMES = {}
+for name in ["mjACT_MOTOR", "mjACT_POSITION", "mjACT_VELOCITY",
+             "mjACT_INTENSITY", "mjACT_ADDITIVE", "mjACT_ABSVEL",
+             "mjACT_RELVEL", "mjACT_USER"]:
+    if hasattr(mujoco.mjtActuator, name):
+        ACTUATOR_TYPE_NAMES[getattr(mujoco.mjtActuator, name)] = name[7:].title()
+
 # ── Camera presets ─────────────────────────────────────────────
 CAMERA_PRESETS = [
     ("Front",    0.0,   0.0),
@@ -41,6 +49,21 @@ CAMERA_PRESETS = [
     ("Iso",    135.0, -20.0),
     ("Iso Back",-45.0, -20.0),
 ]
+
+# ── Label modes ───────────────────────────────────────────────  # NEW
+LABEL_MODES = [
+    ("None", 0),
+    ("Body", 1),
+    ("Joint", 2),
+    ("Geom", 3),
+    ("Site", 4),
+    ("Camera", 5),
+    ("Light", 6),
+    ("All", 7),
+]
+
+# ── Max recent files ──────────────────────────────────────────  # NEW
+MAX_RECENT_FILES = 8
 
 # ── Built-in example MuJoCo XML scenes ────────────────────────
 EXAMPLES = {}
@@ -321,6 +344,57 @@ EXAMPLES["Walker"] = """
 </mujoco>
 """
 
+# NEW: Swimmer example
+EXAMPLES["Swimmer"] = """
+<mujoco model="swimmer">
+  <option gravity="0 0 0" timestep="0.01"/>
+  <default><joint damping="0.1"/><geom friction="0.8 0.02 0.02"/></default>
+  <worldbody>
+    <light pos="0 0 3" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="10 10 0.1" rgba="0.15 0.2 0.25 1"/>
+    <body name="head" pos="0 0 0.05">
+      <joint name="slide_x" type="slide" axis="1 0 0" damping="0.5"/>
+      <joint name="slide_y" type="slide" axis="0 1 0" damping="0.5"/>
+      <joint name="rot" type="hinge" axis="0 0 1" damping="0.2"/>
+      <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.05" rgba="0.2 0.7 0.9 1" mass="1"/>
+      <body name="mid" pos="0.2 0 0">
+        <joint name="joint1" type="hinge" axis="0 0 1" range="-90 90" damping="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.045" rgba="0.2 0.6 0.8 1" mass="0.8"/>
+        <body name="tail" pos="0.2 0 0">
+          <joint name="joint2" type="hinge" axis="0 0 1" range="-90 90" damping="0.03"/>
+          <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.04" rgba="0.2 0.5 0.7 1" mass="0.6"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="motor1" joint="joint1" ctrlrange="-1 1" ctrllimited="true"/>
+    <motor name="motor2" joint="joint2" ctrlrange="-1 1" ctrllimited="true"/>
+  </actuator>
+</mujoco>
+"""
+
+# NEW: Double Pendulum example
+EXAMPLES["Double Pendulum"] = """
+<mujoco model="double_pendulum">
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+  <default><joint damping="0.01"/><geom friction="0.8 0.02 0.02"/></default>
+  <worldbody>
+    <light pos="0 0 5"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.25 0.25 0.25 1"/>
+    <body name="pivot" pos="0 0 2">
+      <joint name="theta1" type="hinge" axis="0 1 0" damping="0.01"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.03" rgba="0.9 0.3 0.3 1" mass="1"/>
+      <body name="mid" pos="0 0 -1">
+        <joint name="theta2" type="hinge" axis="0 1 0" damping="0.01"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.025" rgba="0.3 0.3 0.9 1" mass="0.8"/>
+        <geom name="tip" type="sphere" pos="0 0 -1" size="0.05" rgba="1 0.8 0.2 1" mass="0.5"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
 # ── Dark theme stylesheet ─────────────────────────────────────
 DARK_STYLE = """
 QMainWindow, QWidget { background-color: #1a1b26; color: #a9b1d6; font-family: 'Segoe UI', 'Arial', sans-serif; font-size: 12px; }
@@ -333,6 +407,8 @@ QToolButton:hover { background-color: #3d59a1; color: #c0caf5; } QToolButton:pre
 QPushButton { background-color: #24283b; border: 1px solid #3b4261; border-radius: 4px; padding: 5px 14px; color: #a9b1d6; font-weight: 500; }
 QPushButton:hover { background-color: #3d59a1; color: #c0caf5; border-color: #3d59a1; } QPushButton:pressed { background-color: #2b3f7a; } QPushButton:checked { background-color: #3d59a1; color: #ffffff; }
 QPushButton:disabled { background-color: #1a1b26; color: #3b4261; border-color: #24283b; }
+QPushButton[class="danger"] { background-color: #5c2b3b; border-color: #f7768e; color: #f7768e; } QPushButton[class="danger"]:hover { background-color: #7a3a4e; }
+QPushButton[class="success"] { background-color: #2b4a2b; border-color: #9ece6a; color: #9ece6a; } QPushButton[class="success"]:hover { background-color: #3a6a3a; }
 QSlider::groove:horizontal { height: 6px; background: #24283b; border-radius: 3px; } QSlider::handle:horizontal { width: 16px; height: 16px; background: #7aa2f7; border-radius: 8px; margin: -5px 0; } QSlider::sub-page:horizontal { background: #3d59a1; border-radius: 3px; }
 QGroupBox { border: 1px solid #24283b; border-radius: 6px; margin-top: 12px; padding: 12px 8px 8px 8px; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #7aa2f7; }
 QTreeWidget { background-color: #1a1b26; border: 1px solid #24283b; alternate-background-color: #1f2035; border-radius: 4px; } QTreeWidget::item { padding: 3px 0; } QTreeWidget::item:selected { background-color: #3d59a1; }
@@ -340,7 +416,7 @@ QHeaderView::section { background-color: #16161e; border: none; border-bottom: 1
 QScrollArea { border: none; background: transparent; } QTabWidget::pane { border: 1px solid #24283b; border-radius: 4px; top: -1px; }
 QTabBar::tab { background-color: #16161e; border: 1px solid #24283b; padding: 7px 16px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; }
 QTabBar::tab:selected { background-color: #24283b; border-bottom-color: #24283b; color: #7aa2f7; }
-QLabel { color: #a9b1d6; background: transparent; } QLabel[class="value"] { color: #7aa2f7; font-family: 'Consolas', 'Courier New', monospace; } QLabel[class="dim"] { color: #565f89; font-size: 11px; } QLabel[class="error"] { color: #f7768e; } QLabel[class="success"] { color: #9ece6a; }
+QLabel { color: #a9b1d6; background: transparent; } QLabel[class="value"] { color: #7aa2f7; font-family: 'Consolas', 'Courier New', monospace; } QLabel[class="dim"] { color: #565f89; font-size: 11px; } QLabel[class="error"] { color: #f7768e; } QLabel[class="success"] { color: #9ece6a; } QLabel[class="warning"] { color: #e0af68; }
 QStatusBar { background-color: #16161e; border-top: 1px solid #24283b; color: #565f89; font-size: 11px; } QStatusBar QLabel { color: #565f89; }
 QComboBox { background-color: #24283b; border: 1px solid #3b4261; border-radius: 4px; padding: 4px 8px; color: #a9b1d6; min-width: 80px; } QComboBox QAbstractItemView { background-color: #1a1b26; border: 1px solid #3d59a1; selection-background-color: #3d59a1; }
 QCheckBox { spacing: 8px; background: transparent; } QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #3b4261; border-radius: 4px; background-color: #24283b; } QCheckBox::indicator:checked { background-color: #7aa2f7; border-color: #7aa2f7; }
@@ -348,8 +424,10 @@ QSplitter::handle { background-color: #24283b; width: 2px; }
 QTableWidget { background-color: #1a1b26; border: 1px solid #24283b; alternate-background-color: #1f2035; border-radius: 4px; gridline-color: #24283b; }
 QPlainTextEdit { background-color: #16161e; border: 1px solid #24283b; color: #a9b1d6; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; border-radius: 4px; padding: 6px; selection-background-color: #3d59a1; }
 QProgressBar { border: 1px solid #24283b; border-radius: 4px; background-color: #16161e; text-align: center; color: #a9b1d6; } QProgressBar::chunk { background-color: #3d59a1; border-radius: 3px; }
-QSpinBox { background-color: #24283b; border: 1px solid #3b4261; border-radius: 4px; padding: 3px 6px; color: #a9b1d6; }
+QSpinBox, QDoubleSpinBox { background-color: #24283b; border: 1px solid #3b4261; border-radius: 4px; padding: 3px 6px; color: #a9b1d6; } QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button { background-color: #3b4261; border: none; width: 16px; }
 QLineEdit { background-color: #16161e; border: 1px solid #3b4261; border-radius: 4px; padding: 4px 8px; color: #a9b1d6; }
+QLineEdit[class="search"] { background-color: #1a1b26; border: 1px solid #3b4261; border-radius: 12px; padding: 4px 10px 4px 24px; color: #a9b1d6; font-size: 11px; }
 QDialog { background-color: #1a1b26; }
 QToolTip { background-color: #24283b; color: #c0caf5; border: 1px solid #3d59a1; padding: 4px; border-radius: 4px; }
+QListWidget { background-color: #1a1b26; border: 1px solid #24283b; border-radius: 4px; color: #a9b1d6; } QListWidget::item { padding: 4px 8px; } QListWidget::item:selected { background-color: #3d59a1; }
 """

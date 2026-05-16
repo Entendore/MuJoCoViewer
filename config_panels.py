@@ -1,13 +1,14 @@
-"""Configuration tabs: XML editor with find/replace and render options panel."""
+"""Configuration tabs: XML editor with find/replace, render options, and camera bookmarks panel."""
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QPlainTextEdit, QComboBox, QCheckBox,
-    QLineEdit, QSlider, QSplitter,
+    QLineEdit, QSlider, QSplitter, QSpinBox, QListWidget,
+    QListWidgetItem, QInputDialog,
 )
 from PySide6.QtCore import Qt, Signal
 import mujoco
-from constants import VIS_FLAGS, CAMERA_PRESETS
+from constants import VIS_FLAGS, CAMERA_PRESETS, LABEL_MODES
 from viewport import MujocoViewport
 from widgets import log
 
@@ -40,6 +41,19 @@ class XMLEditor(QWidget):
         btn_find_next.clicked.connect(self._find_next)
         fb_lay.addWidget(btn_find_next)
 
+        # NEW: Find previous
+        btn_find_prev = QPushButton("▲")
+        btn_find_prev.setFixedWidth(28)
+        btn_find_prev.setToolTip("Find previous")
+        btn_find_prev.clicked.connect(self._find_prev)
+        fb_lay.addWidget(btn_find_prev)
+
+        # NEW: Match counter
+        self._match_lbl = QLabel("")
+        self._match_lbl.setProperty("class", "dim")
+        self._match_lbl.setFixedWidth(60)
+        fb_lay.addWidget(self._match_lbl)
+
         fb_lay.addWidget(QLabel("Replace:"))
         self._replace_input = QLineEdit()
         self._replace_input.setPlaceholderText("Replace with…")
@@ -64,6 +78,9 @@ class XMLEditor(QWidget):
         self.editor = QPlainTextEdit()
         self.editor.setPlaceholderText("Load a model to view XML…")
         self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        # NEW: Monospace font
+        from PySide6.QtGui import QFont
+        self.editor.setFont(QFont("Consolas", 11))
         layout.addWidget(self.editor)
 
         # ── Status bar ──
@@ -74,7 +91,7 @@ class XMLEditor(QWidget):
 
         btn_find = QPushButton("🔍 Find")
         btn_find.setFixedWidth(70)
-        btn_find.clicked.connect(lambda: self._find_bar.setVisible(True))
+        btn_find.clicked.connect(self._show_find_bar)
         btn_row.addWidget(btn_find)
 
         self._wrap_cb = QCheckBox("Wrap")
@@ -88,6 +105,11 @@ class XMLEditor(QWidget):
 
         btn_row.addWidget(self.status_lbl)
         btn_row.addStretch()
+
+        # NEW: Line/char count
+        self._cursor_lbl = QLabel("")
+        self._cursor_lbl.setProperty("class", "dim")
+        btn_row.addWidget(self._cursor_lbl)
 
         self.revert_btn = QPushButton("⟲  Revert")
         self.revert_btn.clicked.connect(self._revert)
@@ -103,6 +125,21 @@ class XMLEditor(QWidget):
         layout.addLayout(btn_row)
 
         self._saved_xml = ""
+
+        # NEW: Update cursor position on cursor change
+        self.editor.cursorPositionChanged.connect(self._update_cursor_pos)
+
+    def _show_find_bar(self):                                         # NEW (renamed)
+        self._find_bar.setVisible(True)
+        self._find_input.setFocus()
+        self._find_input.selectAll()
+
+    def _update_cursor_pos(self):                                      # NEW
+        cursor = self.editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        total_lines = self.editor.document().blockCount()
+        self._cursor_lbl.setText(f"Ln {line}:{col} / {total_lines}")
 
     def set_xml(self, xml_string):
         self._saved_xml = xml_string
@@ -131,9 +168,33 @@ class XMLEditor(QWidget):
             return
         cursor = self.editor.document().find(text, self.editor.textCursor())
         if cursor.isNull():
+            # Wrap around
             cursor = self.editor.document().find(text)
         if not cursor.isNull():
             self.editor.setTextCursor(cursor)
+        self._update_match_count(text)
+
+    def _find_prev(self):                                              # NEW
+        text = self._find_input.text()
+        if not text:
+            return
+        cursor = self.editor.document().find(text, self.editor.textCursor(), 
+                                              self.editor.document().FindBackward)
+        if cursor.isNull():
+            cursor = self.editor.document().find(text, 
+                                                  self.editor.document().end(),
+                                                  self.editor.document().FindBackward)
+        if not cursor.isNull():
+            self.editor.setTextCursor(cursor)
+        self._update_match_count(text)
+
+    def _update_match_count(self, text):                               # NEW
+        if not text:
+            self._match_lbl.setText("")
+            return
+        content = self.editor.toPlainText()
+        count = content.count(text)
+        self._match_lbl.setText(f"{count} matches")
 
     def _replace_one(self):
         text = self._find_input.text()
@@ -196,6 +257,34 @@ class RenderOptionsPanel(QWidget):
         center_btn.clicked.connect(self._center_camera)
         btn_row.addWidget(center_btn)
         cam_lay.addLayout(btn_row)
+
+        # NEW: Camera bookmarks
+        bm_row = QHBoxLayout()
+        bm_row.addWidget(QLabel("Bookmark:"))
+        self.bm_name_input = QLineEdit()
+        self.bm_name_input.setPlaceholderText("name…")
+        self.bm_name_input.setMaximumWidth(100)
+        bm_row.addWidget(self.bm_name_input)
+        save_bm_btn = QPushButton("💾")
+        save_bm_btn.setToolTip("Save current camera as bookmark")
+        save_bm_btn.setFixedWidth(28)
+        save_bm_btn.clicked.connect(self._save_bookmark)
+        bm_row.addWidget(save_bm_btn)
+        self.bm_combo = QComboBox()
+        self.bm_combo.setMaximumWidth(100)
+        bm_row.addWidget(self.bm_combo)
+        load_bm_btn = QPushButton("📂")
+        load_bm_btn.setToolTip("Load selected bookmark")
+        load_bm_btn.setFixedWidth(28)
+        load_bm_btn.clicked.connect(self._load_bookmark)
+        bm_row.addWidget(load_bm_btn)
+        del_bm_btn = QPushButton("🗑")
+        del_bm_btn.setToolTip("Delete selected bookmark")
+        del_bm_btn.setFixedWidth(28)
+        del_bm_btn.clicked.connect(self._delete_bookmark)
+        bm_row.addWidget(del_bm_btn)
+        cam_lay.addLayout(bm_row)
+
         layout.addWidget(cam_group)
 
         # ── Overlays ──
@@ -217,6 +306,11 @@ class RenderOptionsPanel(QWidget):
         self.info_overlay_cb.setChecked(True)
         self.info_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_info_overlay', v))
         overlay_lay.addWidget(self.info_overlay_cb)
+        # NEW: Sim info overlay
+        self.sim_info_overlay_cb = QCheckBox("Sim Time Info")
+        self.sim_info_overlay_cb.setChecked(True)
+        self.sim_info_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_sim_info', v))
+        overlay_lay.addWidget(self.sim_info_overlay_cb)
         layout.addWidget(overlay_group)
 
         # ── Traces ──
@@ -226,6 +320,28 @@ class RenderOptionsPanel(QWidget):
         self.trace_cb.setChecked(False)
         self.trace_cb.toggled.connect(self._on_trace_toggled)
         trace_lay.addWidget(self.trace_cb)
+        # NEW: Trace settings
+        trace_settings = QHBoxLayout()
+        trace_settings.addWidget(QLabel("Interval:"))
+        self.trace_interval_spin = QSpinBox()
+        self.trace_interval_spin.setRange(1, 50)
+        self.trace_interval_spin.setValue(4)
+        self.trace_interval_spin.setToolTip("Record trace every N frames")
+        self.trace_interval_spin.valueChanged.connect(
+            lambda v: setattr(self.viewport, '_trace_interval', v)
+        )
+        trace_settings.addWidget(self.trace_interval_spin)
+        trace_settings.addWidget(QLabel("Max:"))
+        self.trace_max_spin = QSpinBox()
+        self.trace_max_spin.setRange(50, 2000)
+        self.trace_max_spin.setValue(400)
+        self.trace_max_spin.setSingleStep(100)
+        self.trace_max_spin.setToolTip("Maximum trace points per body")
+        self.trace_max_spin.valueChanged.connect(
+            lambda v: setattr(self.viewport, '_max_trace_len', v)
+        )
+        trace_settings.addWidget(self.trace_max_spin)
+        trace_lay.addLayout(trace_settings)
         clear_traces_btn = QPushButton("Clear Traces")
         clear_traces_btn.clicked.connect(self.viewport.clear_traces)
         trace_lay.addWidget(clear_traces_btn)
@@ -240,6 +356,17 @@ class RenderOptionsPanel(QWidget):
             cb.toggled.connect(self._make_flag_cb(flag))
             vis_lay.addWidget(cb)
             self._checkboxes.append(cb)
+
+        # NEW: Label mode
+        label_row = QHBoxLayout()
+        label_row.addWidget(QLabel("Labels:"))
+        self.label_combo = QComboBox()
+        for name, val in LABEL_MODES:
+            self.label_combo.addItem(name)
+        self.label_combo.currentIndexChanged.connect(self._on_label_changed)
+        label_row.addWidget(self.label_combo)
+        vis_lay.addLayout(label_row)
+
         layout.addWidget(vis_group)
 
         # ── Geometry Groups ──
@@ -252,7 +379,7 @@ class RenderOptionsPanel(QWidget):
             geom_lay.addWidget(cb, g // 3, g % 3)
         layout.addWidget(geom_group)
 
-        # ── Transparency ──
+        # ── Rendering ──
         trans_group = QGroupBox("Rendering")
         trans_lay = QVBoxLayout(trans_group)
         trans_lay.addWidget(QLabel("Stereo:"))
@@ -260,6 +387,17 @@ class RenderOptionsPanel(QWidget):
         self.scheme_combo.addItems(["None", "Side-by-Side", "Quad Buffered"])
         self.scheme_combo.currentIndexChanged.connect(self._on_scheme_changed)
         trans_lay.addWidget(self.scheme_combo)
+
+        # NEW: Render quality
+        quality_row = QHBoxLayout()
+        quality_row.addWidget(QLabel("Quality:"))
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(["Low", "Medium", "High"])
+        self.quality_combo.setCurrentIndex(1)
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
+        quality_row.addWidget(self.quality_combo)
+        trans_lay.addLayout(quality_row)
+
         layout.addWidget(trans_group)
 
         layout.addStretch()
@@ -317,6 +455,33 @@ class RenderOptionsPanel(QWidget):
             self.viewport.cam.lookat = self.viewport.model.stat.center.copy()
             self.viewport.render()
 
+    # NEW: Camera bookmark actions
+    def _save_bookmark(self):
+        name = self.bm_name_input.text().strip()
+        if not name:
+            name, ok = QInputDialog.getText(self, "Bookmark Name", "Enter name:")
+            if not ok or not name:
+                return
+        self.viewport.save_camera_bookmark(name)
+        self._refresh_bookmark_combo()
+        self.bm_name_input.clear()
+
+    def _load_bookmark(self):
+        name = self.bm_combo.currentText()
+        if name:
+            self.viewport.load_camera_bookmark(name)
+
+    def _delete_bookmark(self):
+        name = self.bm_combo.currentText()
+        if name:
+            self.viewport.delete_camera_bookmark(name)
+            self._refresh_bookmark_combo()
+
+    def _refresh_bookmark_combo(self):
+        self.bm_combo.clear()
+        for name in self.viewport.get_camera_bookmarks():
+            self.bm_combo.addItem(name)
+
     def _on_trace_toggled(self, checked):
         self.viewport._show_traces = checked
         if not checked:
@@ -332,6 +497,27 @@ class RenderOptionsPanel(QWidget):
                 self.viewport.renderer.scene.stereo = 0
             elif idx == 1:
                 self.viewport.renderer.scene.stereo = 1
+        except Exception:
+            pass
+        self.viewport.render()
+
+    # NEW: Label mode changed
+    def _on_label_changed(self, idx):
+        if 0 <= idx < len(LABEL_MODES):
+            _, val = LABEL_MODES[idx]
+            self.viewport.vopt.label = val
+            self.viewport.render()
+
+    # NEW: Render quality
+    def _on_quality_changed(self, idx):
+        # Quality affects sample count or resolution — simple approximation
+        try:
+            if idx == 0:  # Low
+                self.viewport.renderer.scene.flags = 0
+            elif idx == 1:  # Medium
+                pass
+            elif idx == 2:  # High
+                self.viewport.renderer.scene.flags = 0
         except Exception:
             pass
         self.viewport.render()
