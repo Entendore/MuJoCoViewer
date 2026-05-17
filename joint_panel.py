@@ -19,13 +19,16 @@ class JointPanel(QWidget):
         self._entries: list = []
         self._model = None
         self._data = None
+        self._lock = None
         self._reset_cbs: list = []
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
 
+    def set_lock(self, lock):
+        self._lock = lock
+
     def build(self, model, data):
         self._model, self._data = model, data
-        # Clear
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
@@ -40,7 +43,6 @@ class JointPanel(QWidget):
             self._layout.addStretch()
             return
 
-        # Header + Reset All
         top_row = QHBoxLayout()
         info_lbl = QLabel(f"{model.njnt} joint{'s' if model.njnt != 1 else ''}")
         info_lbl.setProperty("class", "dim")
@@ -101,7 +103,6 @@ class JointPanel(QWidget):
                     self._entries.append(("ball", i, val_lbl))
 
                 else:
-                    # Hinge or Slide — scalar DOF with range
                     rng = model.jnt_range[i]
                     has_range = rng[1] > rng[0]
                     lo, hi = float(rng[0]), float(rng[1])
@@ -116,7 +117,6 @@ class JointPanel(QWidget):
                     val_lbl.setProperty("class", "value")
                     gl.addWidget(val_lbl)
 
-                    # Slider + SpinBox row
                     ctrl_row = QHBoxLayout()
                     slider = QSlider(Qt.Horizontal)
                     slider.setMinimum(0)
@@ -177,8 +177,6 @@ class JointPanel(QWidget):
 
         self._layout.addStretch()
 
-    # ── Callbacks ──────────────────────────────────────────────
-
     def _reset_all(self):
         for cb in self._reset_cbs:
             try:
@@ -189,8 +187,15 @@ class JointPanel(QWidget):
     def _make_slider_cb(self, jnt_id, qpos_adr, lo, hi, lbl):
         def cb(val):
             v = lo + (val / 1000.0) * (hi - lo)
-            self._data.qpos[qpos_adr] = v
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.qpos[qpos_adr] = v
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{v:.4f}")
+            self._update_value_color(lbl, v, lo, hi)
         return cb
 
     def _make_slider_to_spin_cb(self, spin, lo, hi):
@@ -204,17 +209,30 @@ class JointPanel(QWidget):
 
     def _make_spin_cb(self, jnt_id, qpos_adr, lo, hi, lbl, slider):
         def cb(val):
-            self._data.qpos[qpos_adr] = val
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.qpos[qpos_adr] = val
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{val:.4f}")
             slider.blockSignals(True)
             slider.setValue(int(np.clip((val - lo) / (hi - lo), 0, 1) * 1000))
             slider.blockSignals(False)
+            self._update_value_color(lbl, val, lo, hi)
         return cb
 
     def _make_reset_cb(self, jnt_id, qpos_adr, lo, hi, slider, lbl, spin):
         def cb():
             mid = (lo + hi) / 2.0
-            self._data.qpos[qpos_adr] = mid
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.qpos[qpos_adr] = mid
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{mid:.4f}")
             slider.blockSignals(True)
             slider.setValue(int(np.clip((mid - lo) / (hi - lo), 0, 1) * 1000))
@@ -223,19 +241,45 @@ class JointPanel(QWidget):
                 spin.blockSignals(True)
                 spin.setValue(mid)
                 spin.blockSignals(False)
+            self._update_value_color(lbl, mid, lo, hi)
         return cb
 
     def _make_free_reset_cb(self, jnt_id, qpos_adr):
         def cb():
-            self._data.qpos[qpos_adr:qpos_adr + 7] = [0, 0, 0, 1, 0, 0, 0]
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.qpos[qpos_adr:qpos_adr + 7] = [0, 0, 0, 1, 0, 0, 0]
+            finally:
+                if self._lock:
+                    self._lock.release()
         return cb
 
     def _make_ball_reset_cb(self, jnt_id, qpos_adr):
         def cb():
-            self._data.qpos[qpos_adr:qpos_adr + 4] = [1, 0, 0, 0]
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.qpos[qpos_adr:qpos_adr + 4] = [1, 0, 0, 0]
+            finally:
+                if self._lock:
+                    self._lock.release()
         return cb
 
-    # ── Refresh (called each tick) ────────────────────────────
+    @staticmethod
+    def _update_value_color(lbl, val, lo, hi):
+        mid = (lo + hi) / 2.0
+        extent = (hi - lo) / 2.0
+        if extent == 0:
+            lbl.setStyleSheet("color: #7aa2f7;")
+            return
+        ratio = abs(val - mid) / extent
+        if ratio > 0.85:
+            lbl.setStyleSheet("color: #f7768e; font-weight: bold;")
+        elif ratio > 0.5:
+            lbl.setStyleSheet("color: #e0af68;")
+        else:
+            lbl.setStyleSheet("color: #7aa2f7;")
 
     def refresh(self):
         if self._data is None or self._model is None:
@@ -277,5 +321,6 @@ class JointPanel(QWidget):
                             spin.blockSignals(True)
                             spin.setValue(v)
                             spin.blockSignals(False)
+                        self._update_value_color(lbl, v, lo, hi)
             except Exception as e:
                 log.debug(f"Error refreshing joint entry: {e}")

@@ -6,8 +6,8 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, QLabel, QWidget,
     QComboBox, QCheckBox, QLineEdit,
 )
-from PySide6.QtCore import Qt, QTimer, QObject, Signal
-from PySide6.QtGui import QFont, QPainter, QColor, QPen
+from PySide6.QtCore import Qt, QTimer, QObject, Signal, QPoint
+from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QLinearGradient, QPolygon
 
 
 # ── Centralized Logger Setup ──────────────────────────────────
@@ -58,20 +58,24 @@ class ToastLabel(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self._styles = {
             "default": (
-                "background-color: rgba(61,89,161,210); color:#fff; "
-                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+                "background-color: rgba(41, 66, 141, 220); color: #ffffff; "
+                "border: 1px solid rgba(122, 162, 247, 120); "
+                "border-radius: 10px; padding: 10px 24px; font-weight: bold; font-size: 14px;"
             ),
             "error": (
-                "background-color: rgba(247,118,142,210); color:#fff; "
-                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+                "background-color: rgba(160, 40, 60, 220); color: #ffffff; "
+                "border: 1px solid rgba(247, 118, 142, 120); "
+                "border-radius: 10px; padding: 10px 24px; font-weight: bold; font-size: 14px;"
             ),
             "success": (
-                "background-color: rgba(158,206,106,200); color:#1a1b26; "
-                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+                "background-color: rgba(40, 100, 50, 220); color: #ffffff; "
+                "border: 1px solid rgba(158, 206, 106, 120); "
+                "border-radius: 10px; padding: 10px 24px; font-weight: bold; font-size: 14px;"
             ),
             "warning": (
-                "background-color: rgba(224,175,104,210); color:#1a1b26; "
-                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+                "background-color: rgba(140, 100, 20, 220); color: #ffffff; "
+                "border: 1px solid rgba(224, 175, 104, 120); "
+                "border-radius: 10px; padding: 10px 24px; font-weight: bold; font-size: 14px;"
             ),
         }
         self.setStyleSheet(self._styles["default"])
@@ -161,14 +165,14 @@ class LogPanel(QWidget):
         self.log_view.setFont(QFont("Consolas", 9))
         self.log_view.document().setMaximumBlockCount(5000)
         self.log_view.setStyleSheet(
-            "QTextEdit { background-color: #16161e; color: #a9b1d6; "
-            "border: 1px solid #24283b; border-radius: 4px; }"
+            "QTextEdit { background-color: #0d0e16; color: #c0caf5; "
+            "border: 1px solid #2a2f45; border-radius: 4px; padding: 4px; }"
         )
         layout.addWidget(self.log_view)
         self._all_messages: list[tuple[str, str]] = []
 
     def append_log(self, message: str):
-        color = "#a9b1d6"
+        color = "#c0caf5"
         for tag, c in [("[ERROR]", "#f7768e"), ("[WARNING]", "#e0af68"),
                         ("[INFO]", "#9ece6a"), ("[DEBUG]", "#565f89")]:
             if tag in message:
@@ -207,13 +211,13 @@ class LogPanel(QWidget):
 
 # ── FPS / RTF Graph Widget ────────────────────────────────────
 class FPSGraph(QWidget):
-    """Real-time FPS and RTF (real-time factor) sparkline graph."""
+    """Real-time FPS and RTF sparkline graph with gradient fills and grid."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(60)
-        self._fps_history: deque = deque(maxlen=120)
-        self._rtf_history: deque = deque(maxlen=120)
+        self.setFixedHeight(80)
+        self._fps_history: deque = deque(maxlen=150)
+        self._rtf_history: deque = deque(maxlen=150)
         self.setMinimumWidth(200)
 
     def add_fps(self, fps, rtf=1.0):
@@ -224,56 +228,90 @@ class FPSGraph(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         try:
-            painter.fillRect(self.rect(), QColor("#16161e"))
-            painter.setPen(QPen(QColor("#24283b"), 1))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            w, h = self.width(), self.height()
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#0d0e16")))
+            painter.drawRoundedRect(0, 0, w, h, 6, 6)
+
+            painter.setPen(QPen(QColor("#2a2f45"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(0, 0, w - 1, h - 1, 6, 6)
+
+            margin_t, margin_b, margin_l, margin_r = 18, 6, 8, 8
+            plot_w = w - margin_l - margin_r
+            plot_h = h - margin_t - margin_b
 
             if len(self._fps_history) < 2:
                 painter.setPen(QColor("#565f89"))
+                painter.setFont(QFont("Consolas", 9))
                 painter.drawText(self.rect(), Qt.AlignCenter, "No FPS data")
                 return
 
             max_fps = max(max(self._fps_history), 60)
-            w, h = self.width(), self.height()
             n = len(self._fps_history)
-            dx = w / max(n - 1, 1)
+            dx = plot_w / max(n - 1, 1)
 
-            # 60 FPS reference line
-            y60 = h - int((60.0 / max_fps) * (h - 4)) - 2
-            painter.setPen(QPen(QColor(158, 206, 106, 60), 1, Qt.DashLine))
-            painter.drawLine(0, y60, w, y60)
+            y60 = margin_t + int(((max_fps - 60) / max_fps) * plot_h)
+            painter.setPen(QPen(QColor(158, 206, 106, 50), 1, Qt.DashLine))
+            painter.drawLine(margin_l, y60, w - margin_r, y60)
 
-            # FPS line
-            painter.setPen(QPen(QColor("#7aa2f7"), 1.5))
-            points = []
+            painter.setPen(QPen(QColor("#1e2235"), 1, Qt.DotLine))
+            for frac in [0.25, 0.5, 0.75]:
+                gy = margin_t + int(frac * plot_h)
+                painter.drawLine(margin_l, gy, w - margin_r, gy)
+
+            fps_points = []
             for i, fps in enumerate(self._fps_history):
-                x = int(i * dx)
-                y = h - int((fps / max_fps) * (h - 4)) - 2
-                points.append((x, y))
-            for i in range(len(points) - 1):
-                painter.drawLine(points[i][0], points[i][1],
-                                 points[i + 1][0], points[i + 1][1])
+                x = margin_l + int(i * dx)
+                y = margin_t + int(((max_fps - fps) / max_fps) * plot_h)
+                fps_points.append((x, y))
 
-            # RTF line (scaled to half height)
+            fps_fill = QColor("#7aa2f7")
+            fps_fill.setAlpha(25)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(fps_fill))
+            poly = QPolygon()
+            poly.append(QPoint(fps_points[0][0], fps_points[0][1]))
+            for px, py in fps_points[1:]:
+                poly.append(QPoint(px, py))
+            poly.append(QPoint(fps_points[-1][0], margin_t + plot_h))
+            poly.append(QPoint(fps_points[0][0], margin_t + plot_h))
+            painter.drawPolygon(poly)
+
+            painter.setPen(QPen(QColor("#7aa2f7"), 1.8))
+            for i in range(len(fps_points) - 1):
+                painter.drawLine(fps_points[i][0], fps_points[i][1],
+                                 fps_points[i + 1][0], fps_points[i + 1][1])
+
             if len(self._rtf_history) >= 2:
                 max_rtf = max(max(self._rtf_history), 1.5)
-                painter.setPen(QPen(QColor(224, 175, 104, 120), 1, Qt.DashLine))
                 rtf_points = []
                 for i, rtf in enumerate(self._rtf_history):
-                    x = int(i * dx)
-                    y = h - int((rtf / max_rtf) * (h * 0.5)) - 2
+                    x = margin_l + int(i * dx)
+                    y = margin_t + int(((max_rtf - rtf) / max_rtf) * (plot_h * 0.5))
                     rtf_points.append((x, y))
+                painter.setPen(QPen(QColor(224, 175, 104, 140), 1.2, Qt.DashLine))
                 for i in range(len(rtf_points) - 1):
                     painter.drawLine(rtf_points[i][0], rtf_points[i][1],
                                      rtf_points[i + 1][0], rtf_points[i + 1][1])
 
             last_fps = self._fps_history[-1]
             last_rtf = self._rtf_history[-1] if self._rtf_history else 1.0
-            painter.setPen(QColor("#7aa2f7"))
+
+            painter.setFont(QFont("Consolas", 9, QFont.Bold))
+            fps_color = QColor("#7aa2f7")
+            if last_fps < 15:
+                fps_color = QColor("#f7768e")
+            elif last_fps < 30:
+                fps_color = QColor("#e0af68")
+            painter.setPen(fps_color)
+            painter.drawText(margin_l + 4, 13, f"{last_fps:.0f} FPS")
+
             painter.setFont(QFont("Consolas", 8))
-            painter.drawText(4, 12, f"{last_fps:.0f} FPS")
             painter.setPen(QColor("#e0af68"))
-            painter.drawText(w - 70, 12, f"RTF {last_rtf:.2f}x")
+            painter.drawText(w - margin_r - 75, 13, f"RTF {last_rtf:.2f}x")
         finally:
             painter.end()
 
@@ -285,17 +323,25 @@ class ShortcutsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
+        self.setStyleSheet(
+            "QDialog { background-color: #1a1b26; }"
+            "QTextEdit { background-color: #0d0e16; color: #c0caf5; "
+            "border: 1px solid #2a2f45; border-radius: 6px; padding: 12px; }"
+            "QPushButton { background-color: #24283b; color: #c0caf5; "
+            "border: 1px solid #3b4261; border-radius: 6px; padding: 8px 24px; }"
+            "QPushButton:hover { background-color: #3d59a1; }"
+        )
         layout = QVBoxLayout(self)
         info = QTextEdit()
         info.setReadOnly(True)
         info.setHtml("""
         <style>
             table { border-collapse: collapse; width: 100%; }
-            td { padding: 5px 10px; border-bottom: 1px solid #24283b; }
+            td { padding: 6px 12px; border-bottom: 1px solid #2a2f45; font-size: 13px; }
             .key { color: #7aa2f7; font-family: Consolas, monospace; font-weight: bold; }
-            .desc { color: #a9b1d6; }
-            h3 { color: #7aa2f7; }
+            .desc { color: #c0caf5; }
+            h3 { color: #7aa2f7; font-size: 15px; margin-top: 16px; }
         </style>
         <h3>Simulation</h3>
         <table>

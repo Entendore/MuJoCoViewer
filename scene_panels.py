@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QHeaderView, QPushButton, QComboBox, QSpinBox, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QPainter, QColor, QPen
+from PySide6.QtCore import Qt, Signal, QRect, QPoint
+from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QLinearGradient, QPolygon
 import mujoco
 from widgets import log
 from constants import SENSOR_TYPE_NAMES
@@ -27,7 +27,6 @@ class BodyTreePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Search filter
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Filter bodies…")
@@ -36,7 +35,6 @@ class BodyTreePanel(QWidget):
         search_row.addWidget(self.search_input)
         layout.addLayout(search_row)
 
-        # Filter combo + expand/collapse
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter:"))
         self.filter_combo = QComboBox()
@@ -53,7 +51,6 @@ class BodyTreePanel(QWidget):
         filter_row.addWidget(collapse_btn)
         layout.addLayout(filter_row)
 
-        # Tree
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
         self.tree.setAlternatingRowColors(True)
@@ -93,6 +90,8 @@ class BodyTreePanel(QWidget):
                 font = item.font(0)
                 font.setBold(True)
                 item.setFont(0, font)
+                for col in range(4):
+                    item.setForeground(col, QColor("#7aa2f7"))
             if parent == -1 or parent not in items:
                 self.tree.addTopLevelItem(item)
             else:
@@ -167,7 +166,6 @@ class WatchPanel(QWidget):
         add_row.addWidget(clear_btn)
         layout.addLayout(add_row)
 
-        # Quick-add presets
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("Quick:"))
         btn_qpos = QPushButton("All qpos")
@@ -227,7 +225,9 @@ class WatchPanel(QWidget):
     def _rebuild_table(self):
         self.watch_table.setRowCount(len(self._watches))
         for i, (cat, idx, label) in enumerate(self._watches):
-            self.watch_table.setItem(i, 0, QTableWidgetItem(label))
+            name_item = QTableWidgetItem(label)
+            name_item.setForeground(QColor("#7aa2f7"))
+            self.watch_table.setItem(i, 0, name_item)
             self.watch_table.setItem(i, 1, QTableWidgetItem("—"))
             remove_btn = QPushButton("✕")
             remove_btn.setFixedWidth(26)
@@ -257,7 +257,7 @@ class WatchPanel(QWidget):
                             item.setForeground(QColor("#f7768e"))
                         else:
                             item.setText(f"{val:.6f}")
-                            item.setForeground(QColor("#a9b1d6"))
+                            item.setForeground(QColor("#c0caf5"))
             except Exception:
                 pass
 
@@ -306,8 +306,12 @@ class SensorPanel(QWidget):
             dim = int(model.sensor_dim[i])
             self._sensor_adr.append(int(model.sensor_adr[i]))
             self._sensor_dim.append(dim)
-            self.table.setItem(i, 0, QTableWidgetItem(name))
-            self.table.setItem(i, 1, QTableWidgetItem(type_name))
+            name_item = QTableWidgetItem(name)
+            name_item.setForeground(QColor("#7aa2f7"))
+            type_item = QTableWidgetItem(type_name)
+            type_item.setForeground(QColor("#565f89"))
+            self.table.setItem(i, 0, name_item)
+            self.table.setItem(i, 1, type_item)
             self.table.setItem(i, 2, QTableWidgetItem("—"))
 
     def refresh(self, data):
@@ -330,7 +334,7 @@ class SensorPanel(QWidget):
                         item.setForeground(QColor("#f7768e"))
                     else:
                         item.setText(f"{val:.4f}")
-                        item.setForeground(QColor("#a9b1d6"))
+                        item.setForeground(QColor("#c0caf5"))
                 elif dim <= 3:
                     vals = []
                     has_nan = False
@@ -350,16 +354,15 @@ class SensorPanel(QWidget):
                     if has_nan or has_inf:
                         item.setForeground(QColor("#f7768e"))
                     else:
-                        item.setForeground(QColor("#a9b1d6"))
+                        item.setForeground(QColor("#c0caf5"))
                 else:
-                    # Check for NaN/Inf in multi-dim sensors
                     raw = data.sensordata[adr:adr + dim]
                     if np.any(np.isnan(raw)) or np.any(np.isinf(raw)):
                         item.setText(f"[{dim} values — NaN/Inf]")
                         item.setForeground(QColor("#f7768e"))
                     else:
                         item.setText(f"[{dim} values]")
-                        item.setForeground(QColor("#a9b1d6"))
+                        item.setForeground(QColor("#9ece6a"))
             except Exception:
                 pass
 
@@ -373,36 +376,31 @@ class EnergyPanel(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         self.kinetic_lbl = QLabel("0.0 J")
         self.kinetic_lbl.setProperty("class", "value")
-        self.kinetic_bar = QProgressBar()
+        self.kinetic_bar = EnergyBar()
 
         self.potential_lbl = QLabel("0.0 J")
         self.potential_lbl.setProperty("class", "value")
-        self.potential_bar = QProgressBar()
+        self.potential_bar = EnergyBar()
 
         self.total_lbl = QLabel("0.0 J")
         self.total_lbl.setProperty("class", "value")
-        self.total_bar = QProgressBar()
+        self.total_bar = EnergyBar()
 
-        for bar in [self.kinetic_bar, self.potential_bar, self.total_bar]:
-            bar.setMinimum(-100)
-            bar.setMaximum(100)
-            bar.setValue(0)
-            bar.setFormat("%v J")
-
-        gk = QGroupBox("Kinetic")
+        gk = QGroupBox("Kinetic Energy")
         gkl = QVBoxLayout(gk)
         gkl.addWidget(self.kinetic_lbl)
         gkl.addWidget(self.kinetic_bar)
 
-        gp = QGroupBox("Potential")
+        gp = QGroupBox("Potential Energy")
         gpl = QVBoxLayout(gp)
         gpl.addWidget(self.potential_lbl)
         gpl.addWidget(self.potential_bar)
 
-        gt = QGroupBox("Total")
+        gt = QGroupBox("Total Energy")
         gtl = QVBoxLayout(gt)
         gtl.addWidget(self.total_lbl)
         gtl.addWidget(self.total_bar)
@@ -424,7 +422,6 @@ class EnergyPanel(QWidget):
                 mujoco.mj_forward(model, data)
             ke, pe = float(data.energy[0]), float(data.energy[1])
 
-            # Handle NaN/Inf gracefully
             if not (np.isfinite(ke) and np.isfinite(pe)):
                 self.kinetic_lbl.setText("NaN" if np.isnan(ke) else f"{ke:.3f} J")
                 self.potential_lbl.setText("NaN" if np.isnan(pe) else f"{pe:.3f} J")
@@ -436,17 +433,79 @@ class EnergyPanel(QWidget):
             self.potential_lbl.setText(f"{pe:.3f} J")
             self.total_lbl.setText(f"{total:.3f} J")
             max_e = max(abs(ke), abs(pe), abs(total), 1.0) * 1.2
-            for bar, val in [
-                (self.kinetic_bar, ke),
-                (self.potential_bar, pe),
-                (self.total_bar, total),
-            ]:
-                bar.setRange(int(-max_e), int(max_e))
-                bar.setValue(int(val))
-                bar.setFormat(f"{val:.2f} J")
+            self.kinetic_bar.set_value(ke, max_e, "#f7768e")
+            self.potential_bar.set_value(pe, max_e, "#7aa2f7")
+            self.total_bar.set_value(total, max_e, "#9ece6a")
             self._history_graph.add_data(ke, pe, total)
         except Exception:
             pass
+
+
+class EnergyBar(QWidget):
+    """Custom-painted energy bar that's visible on dark themes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(22)
+        self._value = 0.0
+        self._max = 1.0
+        self._color = "#7aa2f7"
+
+    def set_value(self, value, max_val, color):
+        self._value = value
+        self._max = max(max_val, 0.001)
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            w, h = self.width(), self.height()
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#16161e")))
+            painter.drawRoundedRect(0, 0, w, h, 4, 4)
+
+            painter.setPen(QPen(QColor("#3b4261"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(0, 0, w - 1, h - 1, 4, 4)
+
+            cx = w // 2
+            painter.setPen(QPen(QColor("#3b4261"), 1, Qt.DashLine))
+            painter.drawLine(cx, 2, cx, h - 2)
+
+            if self._max > 0:
+                ratio = np.clip(self._value / self._max, -1, 1)
+                bar_color = QColor(self._color)
+                bar_color.setAlpha(200)
+                if ratio >= 0:
+                    bar_w = int(ratio * (w // 2))
+                    grad = QLinearGradient(cx, 0, cx + bar_w, 0)
+                    grad.setColorAt(0, bar_color)
+                    lighter = QColor(bar_color)
+                    lighter.setAlpha(120)
+                    grad.setColorAt(1, lighter)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(grad))
+                    painter.drawRoundedRect(cx, 2, max(bar_w, 1), h - 4, 2, 2)
+                else:
+                    bar_w = int(abs(ratio) * (w // 2))
+                    grad = QLinearGradient(cx, 0, cx - bar_w, 0)
+                    grad.setColorAt(0, bar_color)
+                    lighter = QColor(bar_color)
+                    lighter.setAlpha(120)
+                    grad.setColorAt(1, lighter)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(grad))
+                    painter.drawRoundedRect(cx - bar_w, 2, max(bar_w, 1), h - 4, 2, 2)
+
+            painter.setPen(QColor("#e0e4f0"))
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            text = f"{self._value:.2f} J"
+            painter.drawText(self.rect(), Qt.AlignCenter, text)
+        finally:
+            painter.end()
 
 
 class EnergyHistoryGraph(QWidget):
@@ -454,13 +513,12 @@ class EnergyHistoryGraph(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(80)
-        self._ke: deque = deque(maxlen=200)
-        self._pe: deque = deque(maxlen=200)
-        self._total: deque = deque(maxlen=200)
+        self.setFixedHeight(140)
+        self._ke: deque = deque(maxlen=300)
+        self._pe: deque = deque(maxlen=300)
+        self._total: deque = deque(maxlen=300)
 
     def add_data(self, ke, pe, total):
-        # Only add finite values to the history graph
         if np.isfinite(ke) and np.isfinite(pe) and np.isfinite(total):
             self._ke.append(ke)
             self._pe.append(pe)
@@ -470,43 +528,88 @@ class EnergyHistoryGraph(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         try:
-            painter.fillRect(self.rect(), QColor("#16161e"))
-            painter.setPen(QPen(QColor("#24283b"), 1))
-            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            w, h = self.width(), self.height()
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#0d0e16")))
+            painter.drawRoundedRect(0, 0, w, h, 6, 6)
+
+            painter.setPen(QPen(QColor("#2a2f45"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(0, 0, w - 1, h - 1, 6, 6)
+
+            margin_t, margin_b, margin_l, margin_r = 20, 20, 8, 8
+            plot_w = w - margin_l - margin_r
+            plot_h = h - margin_t - margin_b
 
             if len(self._total) < 2:
                 painter.setPen(QColor("#565f89"))
-                painter.setFont(QFont("Consolas", 8))
+                painter.setFont(QFont("Consolas", 9))
                 painter.drawText(self.rect(), Qt.AlignCenter, "Energy history")
                 return
 
-            w, h = self.width(), self.height()
             all_vals = list(self._ke) + list(self._pe) + list(self._total)
             min_v, max_v = min(all_vals), max(all_vals)
             span = max_v - min_v if max_v != min_v else 1.0
+            min_v -= span * 0.05
+            max_v += span * 0.05
+            span = max_v - min_v
 
-            for data, color in [
-                (self._ke, "#f7768e"),
-                (self._pe, "#7aa2f7"),
-                (self._total, "#9ece6a"),
+            painter.setPen(QPen(QColor("#1e2235"), 1, Qt.DotLine))
+            for i in range(4):
+                y = margin_t + int(i * plot_h / 3)
+                painter.drawLine(margin_l, y, w - margin_r, y)
+
+            if min_v < 0 < max_v:
+                y0 = margin_t + int(((max_v - 0) / span) * plot_h)
+                painter.setPen(QPen(QColor("#3b4261"), 1, Qt.DashLine))
+                painter.drawLine(margin_l, y0, w - margin_r, y0)
+
+            painter.setFont(QFont("Consolas", 7))
+            painter.setPen(QColor("#565f89"))
+            for i, val in enumerate([max_v, (max_v + min_v) / 2, min_v]):
+                y = margin_t + int(i * plot_h / 2)
+                painter.drawText(margin_l + 2, y - 2, f"{val:.1f}")
+
+            for data, color_hex, fill_alpha in [
+                (self._ke, "#f7768e", 30),
+                (self._pe, "#7aa2f7", 25),
+                (self._total, "#9ece6a", 20),
             ]:
-                painter.setPen(QPen(QColor(color), 1.2))
                 n = len(data)
-                dx = w / max(n - 1, 1)
-                points = [
-                    (int(i * dx), h - int(((v - min_v) / span) * (h - 8)) - 4)
-                    for i, v in enumerate(data)
-                ]
+                dx = plot_w / max(n - 1, 1)
+                points = []
+                for i, v in enumerate(data):
+                    x = margin_l + int(i * dx)
+                    y = margin_t + int(((max_v - v) / span) * plot_h)
+                    points.append((x, y))
+
+                color = QColor(color_hex)
+                fill_color = QColor(color)
+                fill_color.setAlpha(fill_alpha)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(fill_color))
+                poly = QPolygon()
+                poly.append(QPoint(points[0][0], points[0][1]))
+                for px, py in points[1:]:
+                    poly.append(QPoint(px, py))
+                poly.append(QPoint(points[-1][0], margin_t + plot_h))
+                poly.append(QPoint(points[0][0], margin_t + plot_h))
+                painter.drawPolygon(poly)
+
+                painter.setPen(QPen(QColor(color_hex), 1.8))
                 for i in range(len(points) - 1):
                     painter.drawLine(points[i][0], points[i][1],
                                      points[i + 1][0], points[i + 1][1])
 
-            painter.setFont(QFont("Consolas", 7))
-            for x, label, color in [(4, "KE", "#f7768e"),
-                                     (24, "PE", "#7aa2f7"),
-                                     (44, "Tot", "#9ece6a")]:
-                painter.setPen(QColor(color))
-                painter.drawText(x, 10, label)
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            legend_x = margin_l + 4
+            for label, color_hex in [("KE", "#f7768e"), ("PE", "#7aa2f7"), ("Tot", "#9ece6a")]:
+                painter.setPen(QColor(color_hex))
+                painter.fillRect(legend_x, 6, 12, 8, QColor(color_hex))
+                painter.drawText(legend_x + 16, 14, label)
+                legend_x += 50
         finally:
             painter.end()
 
@@ -574,8 +677,12 @@ class ContactsPanel(QWidget):
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2)
                 or f"geom_{c.geom2}"
             )
-            self.table.setItem(i, 0, QTableWidgetItem(g1_name))
-            self.table.setItem(i, 1, QTableWidgetItem(g2_name))
+            g1_item = QTableWidgetItem(g1_name)
+            g1_item.setForeground(QColor("#7aa2f7"))
+            g2_item = QTableWidgetItem(g2_name)
+            g2_item.setForeground(QColor("#7aa2f7"))
+            self.table.setItem(i, 0, g1_item)
+            self.table.setItem(i, 1, g2_item)
 
             dist_val = float(c.dist)
             if np.isnan(dist_val) or np.isinf(dist_val):
@@ -585,6 +692,7 @@ class ContactsPanel(QWidget):
                 dist_item = QTableWidgetItem(f"{dist_val:.5f}")
                 if dist_val < 0:
                     dist_item.setForeground(QColor("#f7768e"))
+                    dist_item.setFont(QFont("Consolas", 9, QFont.Bold))
                 elif dist_val < 0.001:
                     dist_item.setForeground(QColor("#e0af68"))
                 else:
@@ -602,14 +710,19 @@ class ContactsPanel(QWidget):
                     force_item = QTableWidgetItem(f"{f_norm:.2f}")
                     if f_norm > 100:
                         force_item.setForeground(QColor("#f7768e"))
+                        force_item.setFont(QFont("Consolas", 9, QFont.Bold))
                     elif f_norm > 10:
                         force_item.setForeground(QColor("#e0af68"))
+                    else:
+                        force_item.setForeground(QColor("#c0caf5"))
                 self.table.setItem(i, 3, force_item)
                 normal = c.frame[:3]
                 if np.all(np.isfinite(normal)):
-                    self.table.setItem(i, 4, QTableWidgetItem(
+                    n_item = QTableWidgetItem(
                         f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
-                    ))
+                    )
+                    n_item.setForeground(QColor("#9ece6a"))
+                    self.table.setItem(i, 4, n_item)
                 else:
                     self.table.setItem(i, 4, QTableWidgetItem("—"))
             except Exception:
@@ -630,6 +743,7 @@ class KeyframePanel(QWidget):
         super().__init__(parent)
         self._model, self._data = None, None
         self._keyframes: dict[str, dict] = {}
+        self._lock = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -663,6 +777,9 @@ class KeyframePanel(QWidget):
         layout.addLayout(action_row)
         layout.addStretch()
 
+    def set_lock(self, lock):
+        self._lock = lock
+
     def build(self, model, data):
         self._model, self._data = model, data
         if self._keyframes and model is not None:
@@ -685,11 +802,22 @@ class KeyframePanel(QWidget):
             if reply == QMessageBox.No:
                 return
 
+        if self._lock:
+            self._lock.acquire()
+        try:
+            qpos = self._data.qpos.copy()
+            qvel = self._data.qvel.copy()
+            ctrl = self._data.ctrl.copy()
+            sim_time = float(self._data.time)
+        finally:
+            if self._lock:
+                self._lock.release()
+
         self._keyframes[name] = {
-            "qpos": self._data.qpos.copy(),
-            "qvel": self._data.qvel.copy(),
-            "ctrl": self._data.ctrl.copy(),
-            "time": float(self._data.time),
+            "qpos": qpos,
+            "qvel": qvel,
+            "ctrl": ctrl,
+            "time": sim_time,
         }
         self._rebuild_list()
         self.name_input.clear()
@@ -702,6 +830,8 @@ class KeyframePanel(QWidget):
         if name not in self._keyframes:
             return
         kf = self._keyframes[name]
+        if self._lock:
+            self._lock.acquire()
         try:
             if len(kf["qpos"]) == len(self._data.qpos):
                 self._data.qpos[:] = kf["qpos"]
@@ -709,10 +839,11 @@ class KeyframePanel(QWidget):
                 self._data.qvel[:] = kf["qvel"]
             if len(kf["ctrl"]) == len(self._data.ctrl):
                 self._data.ctrl[:] = kf["ctrl"]
-            self.load_keyframe.emit(kf)
-            log.info(f"Keyframe loaded: {name}")
-        except Exception as e:
-            log.error(f"Error loading keyframe '{name}': {e}")
+        finally:
+            if self._lock:
+                self._lock.release()
+        self.load_keyframe.emit(kf)
+        log.info(f"Keyframe loaded: {name}")
 
     def _delete_selected(self):
         item = self.kf_list.currentItem()
@@ -730,4 +861,6 @@ class KeyframePanel(QWidget):
     def _rebuild_list(self):
         self.kf_list.clear()
         for name, kf in self._keyframes.items():
-            self.kf_list.addItem(f"{name}  (t={kf['time']:.2f}s)")
+            item = QListWidgetItem(f"{name}  (t={kf['time']:.2f}s)")
+            item.setForeground(QColor("#c0caf5"))
+            self.kf_list.addItem(item)

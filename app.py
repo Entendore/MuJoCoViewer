@@ -21,7 +21,6 @@ from main_window import MainWindow
 
 
 def main():
-    # Enable high-DPI scaling
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -30,12 +29,11 @@ def main():
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLE)
     app.setApplicationName("MuJoCo Viewer")
-    app.setApplicationVersion("1.1.0")
+    app.setApplicationVersion("1.3.0")
     app.setOrganizationName("MuJoCoViewer")
 
     window = MainWindow()
 
-    # If a file path was given on the command line, load it
     if len(sys.argv) > 1:
         path = sys.argv[1]
         if os.path.isfile(path):
@@ -45,7 +43,6 @@ def main():
 
     window.show()
 
-    # Maximize on large screens
     screen = app.primaryScreen()
     if screen:
         size = screen.availableSize()

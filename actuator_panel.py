@@ -16,14 +16,17 @@ class ActuatorPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model, self._data = None, None
+        self._lock = None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._actuator_count = 0
         self._reset_cbs: list = []
 
+    def set_lock(self, lock):
+        self._lock = lock
+
     def build(self, model, data):
         self._model, self._data = model, data
-        # Clear old widgets
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
@@ -40,7 +43,6 @@ class ActuatorPanel(QWidget):
         self._actuator_count = model.nu
         self._reset_cbs = []
 
-        # Header row
         top_row = QHBoxLayout()
         info_lbl = QLabel(f"{model.nu} actuator{'s' if model.nu != 1 else ''}")
         info_lbl.setProperty("class", "dim")
@@ -71,7 +73,6 @@ class ActuatorPanel(QWidget):
             gl.setContentsMargins(6, 6, 6, 6)
             gl.setSpacing(2)
 
-            # Type + range info row
             info_row = QHBoxLayout()
             type_lbl = QLabel(f"[{atype_name}]")
             type_lbl.setProperty("class", "dim")
@@ -84,12 +85,10 @@ class ActuatorPanel(QWidget):
             info_row.addWidget(range_lbl)
             gl.addLayout(info_row)
 
-            # Value display
             val_lbl = QLabel(f"{data.ctrl[i]:.3f}")
             val_lbl.setProperty("class", "value")
             gl.addWidget(val_lbl)
 
-            # Slider + SpinBox row
             ctrl_row = QHBoxLayout()
             slider = QSlider(Qt.Horizontal)
             slider.setMinimum(0)
@@ -110,12 +109,10 @@ class ActuatorPanel(QWidget):
             ctrl_row.addWidget(spin, stretch=1)
             gl.addLayout(ctrl_row)
 
-            # Reset button
             reset_btn = QPushButton("⟲ Reset")
             reset_btn.setFixedHeight(22)
             gl.addWidget(reset_btn)
 
-            # Connect signals with closures
             slider_cb = self._make_slider_cb(i, lo, hi, val_lbl, spin)
             spin_cb = self._make_spin_cb(i, lo, hi, val_lbl, slider)
             reset_cb = self._make_reset_cb(i, lo, hi, slider, val_lbl, spin)
@@ -125,7 +122,6 @@ class ActuatorPanel(QWidget):
             reset_btn.clicked.connect(reset_cb)
             self._reset_cbs.append(reset_cb)
 
-            # Color-code initial value
             self._update_value_style(val_lbl, float(data.ctrl[i]), lo, hi)
 
             group.setMaximumHeight(140)
@@ -133,17 +129,20 @@ class ActuatorPanel(QWidget):
 
         self._layout.addStretch()
 
-    # ── Callbacks ──────────────────────────────────────────────
-
     def _reset_all(self):
         for cb in self._reset_cbs:
             cb()
 
     def _make_slider_cb(self, act_id, lo, hi, lbl, spin):
-        """Slider → update data, label, and spin box."""
         def cb(val):
             v = lo + (val / 1000.0) * (hi - lo)
-            self._data.ctrl[act_id] = v
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.ctrl[act_id] = v
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{v:.3f}")
             spin.blockSignals(True)
             spin.setValue(v)
@@ -153,7 +152,13 @@ class ActuatorPanel(QWidget):
 
     def _make_spin_cb(self, act_id, lo, hi, lbl, slider):
         def cb(val):
-            self._data.ctrl[act_id] = val
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.ctrl[act_id] = val
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{val:.3f}")
             slider.blockSignals(True)
             slider.setValue(int(np.clip((val - lo) / (hi - lo), 0, 1) * 1000))
@@ -164,7 +169,13 @@ class ActuatorPanel(QWidget):
     def _make_reset_cb(self, act_id, lo, hi, slider, lbl, spin):
         def cb():
             mid = (lo + hi) / 2.0
-            self._data.ctrl[act_id] = mid
+            if self._lock:
+                self._lock.acquire()
+            try:
+                self._data.ctrl[act_id] = mid
+            finally:
+                if self._lock:
+                    self._lock.release()
             lbl.setText(f"{mid:.3f}")
             slider.blockSignals(True)
             slider.setValue(int(np.clip((mid - lo) / (hi - lo), 0, 1) * 1000))
@@ -180,10 +191,11 @@ class ActuatorPanel(QWidget):
         mid = (lo + hi) / 2.0
         extent = (hi - lo) / 2.0
         if extent == 0:
+            lbl.setStyleSheet("color: #7aa2f7;")
             return
-        ratio = abs(val - mid) / extent  # 0=center, 1=edge
-        if ratio > 0.8:
-            lbl.setStyleSheet("color: #f7768e;")
+        ratio = abs(val - mid) / extent
+        if ratio > 0.85:
+            lbl.setStyleSheet("color: #f7768e; font-weight: bold;")
         elif ratio > 0.5:
             lbl.setStyleSheet("color: #e0af68;")
         else:

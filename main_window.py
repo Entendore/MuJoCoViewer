@@ -1,4 +1,11 @@
-"""Main application window — assembles all panels and runs the sim loop."""
+"""Main application window — assembles all panels and runs the sim loop.
+
+Thread architecture:
+  - SimWorker runs mj_step in a daemon thread with an RLock
+  - The Qt timer tick acquires the lock for render + panel refresh
+  - User input callbacks (sliders, keyframes) acquire the lock for writes
+  - paintEvent() is lock-free via cached overlay data
+"""
 
 import time
 import os
@@ -14,7 +21,10 @@ from PySide6.QtCore import Qt, QTimer, QSize, QSettings
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 
 import mujoco
-from constants import EXAMPLES, CAMERA_PRESETS, MAX_RECENT_FILES
+from constants import (
+    SEED_EXAMPLES, EXAMPLE_XML_DIR, CAMERA_PRESETS,
+    MAX_RECENT_FILES, SPEED_TABLE,
+)
 from widgets import ShortcutsDialog, LogPanel, FPSGraph, log, log_emitter
 from viewport import MujocoViewport
 from joint_panel import JointPanel
@@ -24,6 +34,7 @@ from scene_panels import (
     SensorPanel, KeyframePanel,
 )
 from config_panels import XMLEditor, RenderOptionsPanel
+from sim_worker import SimWorker
 
 
 class MainWindow(QMainWindow):
@@ -37,28 +48,25 @@ class MainWindow(QMainWindow):
         self.data: mujoco.MjData | None = None
         self.playing = False
         self.speed_factor = 1.0
-        self._sim_time_accumulator = 0.0
-        self._current_xml = EXAMPLES["Demo Scene"]
+        self._current_xml = ""
         self._current_file_path = ""
 
-        # FPS / RTF tracking
+        self.sim_worker = SimWorker()
+        self.sim_worker.start()
+
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.fps = 0.0
-        self.last_real_time = time.time()
-        self.last_sim_time = 0.0
         self.rtf = 0.0
         self._rtf_real_time = time.time()
         self._rtf_sim_time = 0.0
         self._step_count = 0
 
-        # Recent files
         self._settings = QSettings("MuJoCoViewer", "MuJoCoViewer")
         self._recent_files = self._settings.value("recent_files", [])
         if isinstance(self._recent_files, str):
             self._recent_files = []
 
-        # Recording
         self._recording = False
         self._record_dir = ""
         self._record_frame = 0
@@ -72,13 +80,42 @@ class MainWindow(QMainWindow):
         log.info("MuJoCo Viewer starting up")
         log.info(f"MuJoCo version: {mujoco.__version__}")
 
-        # Main simulation timer (~60 Hz)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
 
-        # Load the default scene
-        self._load_xml_string(self._current_xml)
+        self._init_examples_folder()
+        self._refresh_example_combo()
+
+        if self.example_combo.count() > 0:
+            self.example_combo.setCurrentIndex(0)
+
+    # ══════════════════════════════════════════════════════════
+    #  XML Examples Folder Logic
+    # ══════════════════════════════════════════════════════════
+
+    def _init_examples_folder(self):
+        os.makedirs(EXAMPLE_XML_DIR, exist_ok=True)
+        for name, xml_string in SEED_EXAMPLES.items():
+            filepath = os.path.join(EXAMPLE_XML_DIR, f"{name}.xml")
+            if not os.path.exists(filepath):
+                try:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(xml_string)
+                    log.info(f"Seed example created: {name}.xml")
+                except Exception as e:
+                    log.error(f"Failed to create seed example {name}: {e}")
+
+    def _refresh_example_combo(self):
+        self.example_combo.blockSignals(True)
+        self.example_combo.clear()
+        if os.path.isdir(EXAMPLE_XML_DIR):
+            for fname in sorted(os.listdir(EXAMPLE_XML_DIR)):
+                if fname.lower().endswith('.xml'):
+                    name = fname[:-4]
+                    filepath = os.path.join(EXAMPLE_XML_DIR, fname)
+                    self.example_combo.addItem(name, filepath)
+        self.example_combo.blockSignals(False)
 
     # ══════════════════════════════════════════════════════════
     #  UI Construction
@@ -87,6 +124,11 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         splitter = QSplitter(Qt.Horizontal)
         self.viewport = MujocoViewport()
+        self.viewport.set_lock(self.sim_worker.lock)
+
+        # Connect NaN signal to auto-pause handler
+        self.viewport.nan_detected.connect(self._on_nan_detected)
+
         splitter.addWidget(self.viewport)
 
         right = QWidget()
@@ -98,74 +140,65 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
 
-        # Joints
         self.joint_panel = JointPanel()
+        self.joint_panel.set_lock(self.sim_worker.lock)
         jscroll = QScrollArea()
         jscroll.setWidgetResizable(True)
         jscroll.setWidget(self.joint_panel)
         self.tabs.addTab(jscroll, "Joints")
 
-        # Actuators
         self.actuator_panel = ActuatorPanel()
+        self.actuator_panel.set_lock(self.sim_worker.lock)
         ascroll = QScrollArea()
         ascroll.setWidgetResizable(True)
         ascroll.setWidget(self.actuator_panel)
         self.tabs.addTab(ascroll, "Actuators")
 
-        # Bodies
         self.body_panel = BodyTreePanel()
         self.body_panel.focus_body.connect(self._focus_body)
         self.tabs.addTab(self.body_panel, "Bodies")
 
-        # Sensors
         self.sensor_panel = SensorPanel()
         self.tabs.addTab(self.sensor_panel, "Sensors")
 
-        # Watch
         self.watch_panel = WatchPanel()
         wscroll = QScrollArea()
         wscroll.setWidgetResizable(True)
         wscroll.setWidget(self.watch_panel)
         self.tabs.addTab(wscroll, "Watch")
 
-        # Energy
         self.energy_panel = EnergyPanel()
         escroll = QScrollArea()
         escroll.setWidgetResizable(True)
         escroll.setWidget(self.energy_panel)
         self.tabs.addTab(escroll, "Energy")
 
-        # Contacts
         self.contacts_panel = ContactsPanel()
         self.tabs.addTab(self.contacts_panel, "Contacts")
 
-        # Keyframes
         self.keyframe_panel = KeyframePanel()
+        self.keyframe_panel.set_lock(self.sim_worker.lock)
         self.keyframe_panel.load_keyframe.connect(self._on_keyframe_loaded)
         kfscroll = QScrollArea()
         kfscroll.setWidgetResizable(True)
         kfscroll.setWidget(self.keyframe_panel)
         self.tabs.addTab(kfscroll, "Keyframes")
 
-        # XML Editor
         self.xml_editor = XMLEditor()
         self.xml_editor.apply_requested.connect(self._apply_xml)
         self.tabs.addTab(self.xml_editor, "XML Editor")
 
-        # Options
         self.options_panel = RenderOptionsPanel(self.viewport)
         oscroll = QScrollArea()
         oscroll.setWidgetResizable(True)
         oscroll.setWidget(self.options_panel)
         self.tabs.addTab(oscroll, "Options")
 
-        # Log
         self.log_panel = LogPanel()
         self.tabs.addTab(self.log_panel, "Log")
 
         right_lay.addWidget(self.tabs)
 
-        # FPS Graph
         self.fps_graph = FPSGraph()
         right_lay.addWidget(self.fps_graph)
 
@@ -175,7 +208,6 @@ class MainWindow(QMainWindow):
         splitter.setSizes([1000, 360])
         self.setCentralWidget(splitter)
 
-        # Status Bar
         self.status_time = QLabel("Time: 0.000s")
         self.status_step = QLabel("Step: 0")
         self.status_rtf = QLabel("RTF: —")
@@ -187,12 +219,26 @@ class MainWindow(QMainWindow):
 
         self.viewport.body_focused.connect(self._focus_body)
 
+    # ── NaN Auto-Pause Handler ────────────────────────────────
+
+    def _on_nan_detected(self):
+        """Called when viewport detects NaN in simulation state."""
+        if self.playing:
+            self.playing = False
+            self.btn_play.setChecked(False)
+            self.btn_play.setText("▶  Play")
+            self.viewport._paused = True
+            self.sim_worker.set_paused(True)
+            self.viewport._toast.show_error(
+                "⚠ Simulation diverged (NaN) — auto-paused. Press R to reset."
+            )
+            log.error("NaN detected — simulation auto-paused")
+
     # ── Menu Bar ──────────────────────────────────────────────
 
     def _build_menu(self):
         menubar = self.menuBar()
 
-        # File
         file_menu = menubar.addMenu("&File")
         load_act = QAction("&Load Model…", self)
         load_act.setShortcut(QKeySequence.Open)
@@ -201,6 +247,11 @@ class MainWindow(QMainWindow):
 
         self._recent_menu = file_menu.addMenu("Recent Files")
         self._update_recent_menu()
+
+        file_menu.addSeparator()
+        save_example_act = QAction("Save to &Examples", self)
+        save_example_act.triggered.connect(self._save_to_examples)
+        file_menu.addAction(save_example_act)
 
         file_menu.addSeparator()
         file_menu.addAction("Save &State…", self._save_state)
@@ -223,7 +274,6 @@ class MainWindow(QMainWindow):
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
-        # Simulation
         sim_menu = menubar.addMenu("&Simulation")
         self.play_act = QAction("▶  &Play", self)
         self.play_act.triggered.connect(self._toggle_play)
@@ -235,7 +285,6 @@ class MainWindow(QMainWindow):
         sim_menu.addAction("Advance 100 steps", lambda: self._advance_n(100))
         sim_menu.addAction("Advance 1000 steps", lambda: self._advance_n(1000))
 
-        # Camera
         cam_menu = menubar.addMenu("&Camera")
         for i, (name, az, el) in enumerate(CAMERA_PRESETS):
             act = QAction(name, self)
@@ -251,7 +300,6 @@ class MainWindow(QMainWindow):
         cam_menu.addSeparator()
         cam_menu.addAction("Save Bookmark…", self._save_camera_bookmark)
 
-        # Help
         help_menu = menubar.addMenu("&Help")
         help_menu.addAction("&Keyboard Shortcuts", self._show_shortcuts)
         help_menu.addAction("&About", self._show_about)
@@ -282,9 +330,9 @@ class MainWindow(QMainWindow):
         tb.addWidget(QLabel("  Speed: "))
         self.speed_combo = QComboBox()
         self.speed_combo.addItems(
-            ["0.1x", "0.25x", "0.5x", "1x", "2x", "4x", "8x", "10x"]
+            [f"{s}x" for s in SPEED_TABLE]
         )
-        self.speed_combo.setCurrentIndex(3)
+        self.speed_combo.setCurrentIndex(3)  # 1x
         self.speed_combo.currentIndexChanged.connect(self._speed_changed)
         tb.addWidget(self.speed_combo)
 
@@ -299,7 +347,6 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addWidget(QLabel("  Example: "))
         self.example_combo = QComboBox()
-        self.example_combo.addItems(EXAMPLES.keys())
         self.example_combo.currentTextChanged.connect(self._load_example)
         tb.addWidget(self.example_combo)
 
@@ -430,17 +477,18 @@ class MainWindow(QMainWindow):
             return
         last_name = list(self.keyframe_panel._keyframes.keys())[-1]
         kf = self.keyframe_panel._keyframes[last_name]
-        try:
-            if len(kf["qpos"]) == len(self.data.qpos):
-                self.data.qpos[:] = kf["qpos"]
-            if len(kf["qvel"]) == len(self.data.qvel):
-                self.data.qvel[:] = kf["qvel"]
-            if len(kf["ctrl"]) == len(self.data.ctrl):
-                self.data.ctrl[:] = kf["ctrl"]
-            self.viewport._toast.show_success(f"Keyframe loaded: {last_name}")
-            log.info(f"Keyframe loaded: {last_name}")
-        except Exception as e:
-            log.error(f"Error loading keyframe: {e}")
+        with self.sim_worker.lock:
+            try:
+                if len(kf["qpos"]) == len(self.data.qpos):
+                    self.data.qpos[:] = kf["qpos"]
+                if len(kf["qvel"]) == len(self.data.qvel):
+                    self.data.qvel[:] = kf["qvel"]
+                if len(kf["ctrl"]) == len(self.data.ctrl):
+                    self.data.ctrl[:] = kf["ctrl"]
+                self.viewport._toast.show_success(f"Keyframe loaded: {last_name}")
+                log.info(f"Keyframe loaded: {last_name}")
+            except Exception as e:
+                log.error(f"Error loading keyframe: {e}")
 
     def _on_keyframe_loaded(self, kf: dict):
         self._update_ui()
@@ -451,9 +499,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_recording(self):
         if not self._recording:
-            path = QFileDialog.getExistingDirectory(
-                self, "Select Folder for Frames"
-            )
+            path = QFileDialog.getExistingDirectory(self, "Select Folder for Frames")
             if not path:
                 return
             self._record_dir = path
@@ -463,9 +509,7 @@ class MainWindow(QMainWindow):
             log.info(f"Recording frames to {path}")
         else:
             self._recording = False
-            self.viewport._toast.show_message(
-                f"Recorded {self._record_frame} frames"
-            )
+            self.viewport._toast.show_message(f"Recorded {self._record_frame} frames")
             log.info(f"Recording stopped: {self._record_frame} frames")
 
     # ══════════════════════════════════════════════════════════
@@ -480,16 +524,12 @@ class MainWindow(QMainWindow):
 
     def _toggle_grid(self):
         self.viewport._show_grid_overlay = not self.viewport._show_grid_overlay
-        self.options_panel.grid_overlay_cb.setChecked(
-            self.viewport._show_grid_overlay
-        )
+        self.options_panel.grid_overlay_cb.setChecked(self.viewport._show_grid_overlay)
         self.viewport.render()
 
     def _toggle_axis(self):
         self.viewport._show_axis_overlay = not self.viewport._show_axis_overlay
-        self.options_panel.axis_overlay_cb.setChecked(
-            self.viewport._show_axis_overlay
-        )
+        self.options_panel.axis_overlay_cb.setChecked(self.viewport._show_axis_overlay)
         self.viewport.render()
 
     # ══════════════════════════════════════════════════════════
@@ -497,25 +537,14 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════
 
     def _load_example(self, name: str):
-        if name in EXAMPLES:
-            self._load_xml_string(EXAMPLES[name])
-
-    def _load_xml_string(self, xml_string: str):
-        try:
-            model = mujoco.MjModel.from_xml_string(xml_string)
-            data = mujoco.MjData(model)
-        except Exception as e:
-            log.error(f"XML parse error: {e}")
-            QMessageBox.critical(self, "Model Error", f"Failed to parse XML:\n{e}")
-            self.xml_editor.set_validation(False, str(e)[:80])
+        if not name:
             return
-        self._current_xml = xml_string
-        self._current_file_path = ""
-        self.btn_reload.setEnabled(False)
-        self.xml_editor.set_xml(xml_string)
-        self.xml_editor.set_validation(True, "Loaded")
-        log.info("Model loaded from XML string")
-        self._set_model(model, data)
+        idx = self.example_combo.findText(name)
+        if idx < 0:
+            return
+        filepath = self.example_combo.itemData(idx)
+        if filepath and os.path.isfile(filepath):
+            self._load_model_path(filepath)
 
     def _load_model_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -547,15 +576,11 @@ class MainWindow(QMainWindow):
         self._current_file_path = path
         self.btn_reload.setEnabled(True)
         self.xml_editor.set_xml(xml_string)
-        self.xml_editor.set_validation(
-            True, f"Loaded from {os.path.basename(path)}"
-        )
+        self.xml_editor.set_validation(True, f"Loaded from {os.path.basename(path)}")
         log.info(f"Model loaded from file: {os.path.basename(path)}")
         self._set_model(model, data)
         self._add_recent_file(path)
-        self.viewport._toast.show_success(
-            f"Loaded: {os.path.basename(path)}"
-        )
+        self.viewport._toast.show_success(f"Loaded: {os.path.basename(path)}")
 
     def _reload_model(self):
         if self._current_file_path and os.path.isfile(self._current_file_path):
@@ -577,11 +602,31 @@ class MainWindow(QMainWindow):
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(xml_string)
                 log.info(f"XML saved to {path}")
-                self.viewport._toast.show_success(
-                    f"XML saved: {os.path.basename(path)}"
-                )
+                self.viewport._toast.show_success(f"XML saved: {os.path.basename(path)}")
             except Exception as e:
                 log.error(f"Failed to save XML: {e}")
+                QMessageBox.critical(self, "Save Error", str(e))
+
+    def _save_to_examples(self):
+        xml_string = self.xml_editor.editor.toPlainText()
+        if not xml_string.strip():
+            return
+        name, ok = QInputDialog.getText(self, "Save to Examples", "Example name:")
+        if ok and name:
+            safe_name = "".join(
+                c for c in name if c.isalnum() or c in (' ', '_', '-')
+            ).strip()
+            if not safe_name:
+                return
+            filepath = os.path.join(EXAMPLE_XML_DIR, f"{safe_name}.xml")
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(xml_string)
+                self._refresh_example_combo()
+                self.viewport._toast.show_success(f"Example saved: {safe_name}")
+                log.info(f"Example saved to {filepath}")
+            except Exception as e:
+                log.error(f"Failed to save example: {e}")
                 QMessageBox.critical(self, "Save Error", str(e))
 
     def _apply_xml(self):
@@ -606,8 +651,11 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════
 
     def _set_model(self, model: mujoco.MjModel, data: mujoco.MjData):
+        self.sim_worker.set_paused(True)
         self.model, self.data = model, data
         self._step_count = 0
+        self.sim_worker.set_model(model, data)
+
         try:
             mujoco.mj_forward(model, data)
         except Exception as e:
@@ -617,11 +665,10 @@ class MainWindow(QMainWindow):
         self.btn_play.setChecked(False)
         self.btn_play.setText("▶  Play")
         self.viewport._paused = False
-        self._sim_time_accumulator = 0.0
+        self.viewport._nan_notified = False
 
         self.viewport.set_model(model, data)
 
-        # Rebuild panels
         panel_builders = [
             (self.joint_panel, "Joint"),
             (self.actuator_panel, "Actuator"),
@@ -634,8 +681,6 @@ class MainWindow(QMainWindow):
             try:
                 if label in ("Body",):
                     panel.build(model)
-                elif label in ("Keyframe",):
-                    panel.build(model, data)
                 else:
                     panel.build(model, data)
             except Exception as e:
@@ -655,10 +700,9 @@ class MainWindow(QMainWindow):
             f"Model stats — bodies:{model.nbody} joints:{model.njnt} "
             f"actuators:{model.nu} dofs:{model.nv} sensors:{model.nsensor}"
         )
-        self.last_sim_time = data.time
-        self.last_real_time = time.time()
         self._rtf_real_time = time.time()
-        self._rtf_sim_time = data.time
+        with self.sim_worker.lock:
+            self._rtf_sim_time = data.time
 
     # ══════════════════════════════════════════════════════════
     #  Simulation Controls
@@ -671,12 +715,11 @@ class MainWindow(QMainWindow):
         self.btn_play.setChecked(self.playing)
         self.btn_play.setText("⏸  Pause" if self.playing else "▶  Play")
         self.viewport._paused = not self.playing
+        self.sim_worker.set_paused(not self.playing)
         if self.playing:
-            self.last_real_time = time.time()
-            self.last_sim_time = self.data.time
             self._rtf_real_time = time.time()
-            self._rtf_sim_time = self.data.time
-            self._sim_time_accumulator = 0.0
+            with self.sim_worker.lock:
+                self._rtf_sim_time = self.data.time
             log.info("Simulation playing")
         else:
             log.info("Simulation paused")
@@ -685,9 +728,8 @@ class MainWindow(QMainWindow):
         if self.model and self.data:
             steps = self.step_spin.value()
             try:
-                for _ in range(steps):
-                    mujoco.mj_step(self.model, self.data)
-                self._step_count += steps
+                self.sim_worker.step_once(steps)
+                self._step_count = self.sim_worker.get_step_count()
                 self.viewport.increment_step_count(steps)
                 self._update_ui()
             except Exception as e:
@@ -697,11 +739,9 @@ class MainWindow(QMainWindow):
         if not self.model or not self.data:
             return
         try:
-            for _ in range(n):
-                mujoco.mj_step(self.model, self.data)
-            self._step_count += n
+            self.sim_worker.advance_n(n)
+            self._step_count = self.sim_worker.get_step_count()
             self.viewport.increment_step_count(n)
-            mujoco.mj_forward(self.model, self.data)
             self._update_ui()
             self.viewport._toast.show_message(f"Advanced {n} steps")
             log.info(f"Advanced {n} steps")
@@ -710,35 +750,35 @@ class MainWindow(QMainWindow):
 
     def _reset_sim(self):
         if self.model and self.data:
+            self.sim_worker.set_paused(True)
             try:
-                mujoco.mj_resetData(self.model, self.data)
-                mujoco.mj_forward(self.model, self.data)
+                self.sim_worker.reset(self.model, self.data)
             except Exception as e:
                 log.error(f"Reset error: {e}")
             self.playing = False
             self.btn_play.setChecked(False)
             self.btn_play.setText("▶  Play")
             self.viewport._paused = False
-            self._sim_time_accumulator = 0.0
             self._step_count = 0
             self.viewport._step_count = 0
-            self.last_sim_time = self.data.time
-            self.last_real_time = time.time()
+            self.viewport._nan_notified = False
             self._rtf_real_time = time.time()
-            self._rtf_sim_time = self.data.time
+            with self.sim_worker.lock:
+                self._rtf_sim_time = self.data.time
             self.viewport.clear_traces()
             self._update_ui()
             self.viewport._toast.show_message("Simulation reset")
             log.info("Simulation reset")
 
     def _speed_changed(self, index):
-        speeds = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 10.0]
-        if 0 <= index < len(speeds):
-            self.speed_factor = speeds[index]
-            log.debug(f"Speed set to {speeds[index]}x")
+        if 0 <= index < len(SPEED_TABLE):
+            self.speed_factor = SPEED_TABLE[index]
+            self.sim_worker.set_speed(self.speed_factor)
+            log.debug(f"Speed set to {SPEED_TABLE[index]}x")
 
     def _set_speed_index(self, idx):
-        self.speed_combo.setCurrentIndex(idx)
+        if 0 <= idx < len(SPEED_TABLE):
+            self.speed_combo.setCurrentIndex(idx)
 
     def _fit_camera(self):
         self.viewport.reset_camera()
@@ -773,18 +813,17 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            np.savez(
-                path,
-                qpos=self.data.qpos.copy(),
-                qvel=self.data.qvel.copy(),
-                ctrl=self.data.ctrl.copy(),
-                act=self.data.act.copy(),
-                time=np.array([self.data.time]),
-                step_count=np.array([self._step_count]),
-            )
-            self.viewport._toast.show_success(
-                f"State saved: {os.path.basename(path)}"
-            )
+            with self.sim_worker.lock:
+                np.savez(
+                    path,
+                    qpos=self.data.qpos.copy(),
+                    qvel=self.data.qvel.copy(),
+                    ctrl=self.data.ctrl.copy(),
+                    act=self.data.act.copy(),
+                    time=np.array([self.data.time]),
+                    step_count=np.array([self._step_count]),
+                )
+            self.viewport._toast.show_success(f"State saved: {os.path.basename(path)}")
             log.info(f"State saved to {os.path.basename(path)}")
         except Exception as e:
             log.error(f"Save state error: {e}")
@@ -802,23 +841,22 @@ class MainWindow(QMainWindow):
             return
         try:
             state = np.load(path)
-            if len(state["qpos"]) == len(self.data.qpos):
-                self.data.qpos[:] = state["qpos"]
-            if len(state["qvel"]) == len(self.data.qvel):
-                self.data.qvel[:] = state["qvel"]
-            if "ctrl" in state and len(state["ctrl"]) == len(self.data.ctrl):
-                self.data.ctrl[:] = state["ctrl"]
-            if "act" in state and len(state["act"]) == len(self.data.act):
-                self.data.act[:] = state["act"]
-            if "step_count" in state:
-                self._step_count = int(state["step_count"][0])
-                self.viewport._step_count = self._step_count
-            mujoco.mj_forward(self.model, self.data)
+            with self.sim_worker.lock:
+                if len(state["qpos"]) == len(self.data.qpos):
+                    self.data.qpos[:] = state["qpos"]
+                if len(state["qvel"]) == len(self.data.qvel):
+                    self.data.qvel[:] = state["qvel"]
+                if "ctrl" in state and len(state["ctrl"]) == len(self.data.ctrl):
+                    self.data.ctrl[:] = state["ctrl"]
+                if "act" in state and len(state["act"]) == len(self.data.act):
+                    self.data.act[:] = state["act"]
+                if "step_count" in state:
+                    self._step_count = int(state["step_count"][0])
+                    self.viewport._step_count = self._step_count
+                mujoco.mj_forward(self.model, self.data)
             self.actuator_panel.build(self.model, self.data)
             self._update_ui()
-            self.viewport._toast.show_success(
-                f"State loaded: {os.path.basename(path)}"
-            )
+            self.viewport._toast.show_success(f"State loaded: {os.path.basename(path)}")
             log.info(f"State loaded from {os.path.basename(path)}")
         except Exception as e:
             log.error(f"Load state error: {e}")
@@ -838,9 +876,7 @@ class MainWindow(QMainWindow):
         )
         if path:
             if self.viewport._image.save(path):
-                self.viewport._toast.show_success(
-                    f"Screenshot saved: {os.path.basename(path)}"
-                )
+                self.viewport._toast.show_success(f"Screenshot saved: {os.path.basename(path)}")
                 log.info(f"Screenshot saved: {os.path.basename(path)}")
             else:
                 self.viewport._toast.show_error("Failed to save screenshot")
@@ -873,56 +909,44 @@ class MainWindow(QMainWindow):
 
     def _tick(self):
         if self.model and self.data:
-            if self.playing:
-                now = time.time()
-                real_dt = min(now - self.last_real_time, 0.1)
-                self.last_real_time = now
-                self._sim_time_accumulator += real_dt * self.speed_factor
+            # Check for background sim errors
+            error = self.sim_worker.get_error()
+            if error:
+                log.error(f"Simulation error: {error}")
+                self.playing = False
+                self.btn_play.setChecked(False)
+                self.btn_play.setText("▶  Play")
+                self.viewport._paused = True
 
-                max_steps = 50
-                step_count = 0
-                timestep = self.model.opt.timestep
-                try:
-                    while (
-                        self._sim_time_accumulator >= timestep
-                        and step_count < max_steps
-                    ):
-                        mujoco.mj_step(self.model, self.data)
-                        self._sim_time_accumulator -= timestep
-                        step_count += 1
-                except Exception as e:
-                    log.error(f"Sim step error: {e}")
-                    self.playing = False
-                    self.btn_play.setChecked(False)
-                    self.btn_play.setText("▶  Play")
-                    self.viewport._paused = True
+            # Check NaN from worker
+            if self.sim_worker.has_nan():
+                self._on_nan_detected()
 
-                if step_count >= max_steps:
-                    self._sim_time_accumulator = 0.0
+            self._step_count = self.sim_worker.get_step_count()
+            self.viewport._step_count = self._step_count
 
-                self._step_count += step_count
-                self.viewport.increment_step_count(step_count)
+            with self.sim_worker.lock:
                 self.viewport.record_trace()
 
-                # Frame recording
-                if self._recording and self.viewport._image is not None:
-                    try:
-                        frame_path = os.path.join(
-                            self._record_dir,
-                            f"frame_{self._record_frame:06d}.png",
-                        )
-                        self.viewport._image.save(frame_path)
-                        self._record_frame += 1
-                    except Exception as e:
-                        log.error(f"Frame save error: {e}")
-                        self._recording = False
+            with self.sim_worker.lock:
+                self._update_ui()
 
-            self._update_ui()
+            if self._recording and self.viewport._image is not None:
+                try:
+                    frame_path = os.path.join(
+                        self._record_dir, f"frame_{self._record_frame:06d}.png",
+                    )
+                    self.viewport._image.save(frame_path)
+                    self._record_frame += 1
+                except Exception as e:
+                    log.error(f"Frame save error: {e}")
+                    self._recording = False
+
             self._calc_fps()
 
     def _update_ui(self):
+        """Render viewport and refresh all inspector panels. Caller must hold lock."""
         self.viewport.render()
-        # Refresh panels
         refreshers = [
             (self.joint_panel, "refresh"),
             (self.energy_panel, "refresh"),
@@ -932,15 +956,14 @@ class MainWindow(QMainWindow):
         ]
         for panel, method in refreshers:
             try:
-                if method == "refresh":
-                    if panel == self.energy_panel:
-                        panel.refresh(self.model, self.data)
-                    elif panel == self.contacts_panel:
-                        panel.refresh(self.model, self.data)
-                    elif panel == self.sensor_panel:
-                        panel.refresh(self.data)
-                    else:
-                        panel.refresh()
+                if panel == self.energy_panel:
+                    panel.refresh(self.model, self.data)
+                elif panel == self.contacts_panel:
+                    panel.refresh(self.model, self.data)
+                elif panel == self.sensor_panel:
+                    panel.refresh(self.data)
+                else:
+                    panel.refresh()
             except Exception as e:
                 log.debug(f"Panel refresh error: {e}")
 
@@ -951,16 +974,16 @@ class MainWindow(QMainWindow):
         self.frame_count += 1
         now = time.time()
 
-        # RTF calculation
         rtf_real_dt = now - self._rtf_real_time
         if rtf_real_dt > 0.2:
-            sim_dt = self.data.time - self._rtf_sim_time
+            with self.sim_worker.lock:
+                sim_dt = self.data.time - self._rtf_sim_time
             self.rtf = sim_dt / rtf_real_dt if rtf_real_dt > 0 else 0
             self._rtf_real_time = now
-            self._rtf_sim_time = self.data.time
+            with self.sim_worker.lock:
+                self._rtf_sim_time = self.data.time
             self.status_rtf.setText(f"RTF: {self.rtf:.2f}x")
 
-        # FPS calculation
         elapsed = now - self.last_fps_time
         if elapsed >= 1.0:
             self.fps = self.frame_count / elapsed
@@ -976,9 +999,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.timer.stop()
+        self.sim_worker.stop()
         if self._recording:
             self._recording = False
-            log.info(
-                f"Recording stopped on close: {self._record_frame} frames"
-            )
+            log.info(f"Recording stopped on close: {self._record_frame} frames")
         event.accept()
