@@ -7,31 +7,32 @@ Requires: pip install mujoco PySide6 numpy
 
 import sys
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
 from constants import DARK_STYLE
 from main_window import MainWindow
 
 if __name__ == "__main__":
-    # NEW: Enable high-DPI scaling
+    # Enable high-DPI scaling
     QApplication.setHighDpiScaleFactorRoundingPolicy(
-        QApplication.HighDpiScaleFactorRoundingPolicy.PassThrough
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
-    
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLE)
-    
-    # NEW: Set application metadata
+
     app.setApplicationName("MuJoCo Viewer")
     app.setApplicationVersion("1.1.0")
     app.setOrganizationName("MuJoCoViewer")
-    
+
     window = MainWindow()
     window.show()
-    
+
+    # Maximize on large screens
     screen = app.primaryScreen()
     if screen:
         size = screen.availableSize()
         if size.width() >= 1920 and size.height() >= 1080:
             window.showMaximized()
-    
+
     sys.exit(app.exec())

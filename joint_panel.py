@@ -73,12 +73,9 @@ class JointPanel(QWidget):
                     reset_row = QHBoxLayout()
                     reset_btn = QPushButton("⟲ Reset")
                     reset_btn.setFixedHeight(20)
-                    reset_btn.clicked.connect(
-                        self._make_free_reset_cb(i, qpos_adr)
-                    )
-                    self._reset_cbs.append(
-                        lambda: self._make_free_reset_cb(i, qpos_adr)()
-                    )
+                    free_cb = self._make_free_reset_cb(i, qpos_adr)       # FIX: create callback directly
+                    reset_btn.clicked.connect(free_cb)
+                    self._reset_cbs.append(free_cb)                        # FIX: store the actual callback
                     reset_row.addWidget(reset_btn)
                     reset_row.addStretch()
                     gl.addLayout(reset_row)
@@ -92,12 +89,9 @@ class JointPanel(QWidget):
                     reset_row = QHBoxLayout()
                     reset_btn = QPushButton("⟲ Reset")
                     reset_btn.setFixedHeight(20)
-                    reset_btn.clicked.connect(
-                        self._make_ball_reset_cb(i, qpos_adr)
-                    )
-                    self._reset_cbs.append(
-                        lambda: self._make_ball_reset_cb(i, qpos_adr)()
-                    )
+                    ball_cb = self._make_ball_reset_cb(i, qpos_adr)       # FIX: create callback directly
+                    reset_btn.clicked.connect(ball_cb)
+                    self._reset_cbs.append(ball_cb)                        # FIX: store the actual callback
                     reset_row.addWidget(reset_btn)
                     reset_row.addStretch()
                     gl.addLayout(reset_row)
@@ -119,7 +113,7 @@ class JointPanel(QWidget):
                     val_lbl.setProperty("class", "value")
                     gl.addWidget(val_lbl)
 
-                    # Slider + SpinBox row                                    # IMPROVED
+                    # Slider + SpinBox row
                     ctrl_row = QHBoxLayout()
                     slider = QSlider(Qt.Horizontal)
                     slider.setMinimum(0)
@@ -179,7 +173,7 @@ class JointPanel(QWidget):
         reset_all_btn.clicked.connect(self._reset_all)
         self._layout.addStretch()
 
-    def _reset_all(self):                                              # NEW
+    def _reset_all(self):
         for cb in self._reset_cbs:
             try:
                 cb()
@@ -272,14 +266,14 @@ class JointPanel(QWidget):
                     lbl.setText(f"{v:.4f}")
                     slider = entry[3]
                     has_range = entry[5]
-                    spin = entry[6] if len(entry) > 6 else None         # NEW
+                    spin = entry[6] if len(entry) > 6 else None
                     if has_range and not slider.isSliderDown():
                         rng = self._model.jnt_range[jnt_id]
                         lo, hi = rng[0], rng[1]
                         slider.blockSignals(True)
                         slider.setValue(int(np.clip((v - lo) / (hi - lo), 0, 1) * 1000))
                         slider.blockSignals(False)
-                        if spin is not None and not spin.hasFocus():     # NEW
+                        if spin is not None and not spin.hasFocus():
                             spin.blockSignals(True)
                             spin.setValue(v)
                             spin.blockSignals(False)

@@ -30,13 +30,19 @@ QPOS_DIMS = {
     mujoco.mjtJoint.mjJNT_HINGE: 1,
 }
 
-# ── Actuator type display names ───────────────────────────────  # NEW
-ACTUATOR_TYPE_NAMES = {}
-for name in ["mjACT_MOTOR", "mjACT_POSITION", "mjACT_VELOCITY",
-             "mjACT_INTENSITY", "mjACT_ADDITIVE", "mjACT_ABSVEL",
-             "mjACT_RELVEL", "mjACT_USER"]:
-    if hasattr(mujoco.mjtActuator, name):
-        ACTUATOR_TYPE_NAMES[getattr(mujoco.mjtActuator, name)] = name[7:].title()
+# ── Actuator type display names ───────────────────────────────
+# mujoco.mjtActuator is NOT exposed in Python bindings,
+# so we hardcode the C enum integer values from mujoco.h.
+ACTUATOR_TYPE_NAMES = {
+    0: "Motor",
+    1: "Position",
+    2: "Velocity",
+    3: "Intensity",
+    4: "Additive",
+    5: "Absvel",
+    6: "Relvel",
+    7: "User",
+}
 
 # ── Camera presets ─────────────────────────────────────────────
 CAMERA_PRESETS = [

@@ -64,7 +64,7 @@ class ToastLabel(QLabel):
             "background-color: rgba(158,206,106,200); color:#1a1b26; "
             "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
         )
-        self._warning_style = (                                    # NEW
+        self._warning_style = (
             "background-color: rgba(224,175,104,210); color:#1a1b26; "
             "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
         )
@@ -73,7 +73,7 @@ class ToastLabel(QLabel):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_timeout)
-        self._queue = deque()                                       # NEW: toast queue
+        self._queue = deque()
 
     def show_message(self, text, duration=2500):
         self._enqueue(text, self._default_style, duration)
@@ -84,15 +84,15 @@ class ToastLabel(QLabel):
     def show_success(self, text, duration=2500):
         self._enqueue(text, self._success_style, duration)
 
-    def show_warning(self, text, duration=3000):                    # NEW
+    def show_warning(self, text, duration=3000):
         self._enqueue(text, self._warning_style, duration)
 
-    def _enqueue(self, text, style, duration):                       # NEW
+    def _enqueue(self, text, style, duration):
         self._queue.append((text, style, duration))
         if not self._timer.isActive():
             self._show_next()
 
-    def _show_next(self):                                            # NEW
+    def _show_next(self):
         if not self._queue:
             self.hide()
             return
@@ -100,7 +100,7 @@ class ToastLabel(QLabel):
         self.setStyleSheet(style)
         self._show(text, duration)
 
-    def _on_timeout(self):                                           # NEW
+    def _on_timeout(self):
         self._show_next()
 
     def _show(self, text, duration):
@@ -127,10 +127,9 @@ class LogPanel(QWidget):
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["All", "Info", "Warning", "Error", "Debug"])
         self.filter_combo.setMaximumWidth(100)
-        self.filter_combo.currentIndexChanged.connect(self._apply_filter)  # NEW: live filter
+        self.filter_combo.currentIndexChanged.connect(self._apply_filter)
         filter_row.addWidget(self.filter_combo)
 
-        # NEW: Search bar
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Search logs…")
         self.search_input.setProperty("class", "search")
@@ -144,7 +143,6 @@ class LogPanel(QWidget):
 
         filter_row.addStretch()
 
-        # NEW: Copy button
         copy_btn = QPushButton("📋 Copy")
         copy_btn.setFixedWidth(70)
         copy_btn.setToolTip("Copy all visible log text")
@@ -190,7 +188,7 @@ class LogPanel(QWidget):
 
     def _apply_filter(self):
         level = self.filter_combo.currentText().lower()
-        search = self.search_input.text().strip().lower()           # NEW
+        search = self.search_input.text().strip().lower()
         self.log_view.clear()
         for msg, color in self._all_messages:
             if level != "all":
@@ -202,12 +200,12 @@ class LogPanel(QWidget):
                     continue
                 elif level == "debug" and "[DEBUG]" not in msg:
                     continue
-            if search and search not in msg.lower():                 # NEW
+            if search and search not in msg.lower():
                 continue
             escaped = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             self.log_view.append(f'<span style="color:{color}">{escaped}</span>')
 
-    def _copy_visible(self):                                         # NEW
+    def _copy_visible(self):
         text = self.log_view.toPlainText()
         if text:
             from PySide6.QtWidgets import QApplication
@@ -219,74 +217,75 @@ class LogPanel(QWidget):
 
 
 # ── FPS / RTF Graph Widget ────────────────────────────────────
-class FPSGraph(QWidget):                                             # IMPROVED: now shows RTF
+class FPSGraph(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(60)
         self._fps_history = deque(maxlen=120)
-        self._rtf_history = deque(maxlen=120)                       # NEW
+        self._rtf_history = deque(maxlen=120)
         self.setMinimumWidth(200)
 
-    def add_fps(self, fps, rtf=1.0):                                # IMPROVED: accepts RTF
+    def add_fps(self, fps, rtf=1.0):
         self._fps_history.append(fps)
         self._rtf_history.append(rtf)
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#16161e"))
-        painter.setPen(QPen(QColor("#24283b"), 1))
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        try:
+            painter.fillRect(self.rect(), QColor("#16161e"))
+            painter.setPen(QPen(QColor("#24283b"), 1))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
-        if len(self._fps_history) < 2:
-            painter.setPen(QColor("#565f89"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "No FPS data")
-            painter.end()
-            return
+            if len(self._fps_history) < 2:
+                painter.setPen(QColor("#565f89"))
+                painter.drawText(self.rect(), Qt.AlignCenter, "No FPS data")
+                return
 
-        max_fps = max(max(self._fps_history), 60)
-        w, h = self.width(), self.height()
-        n = len(self._fps_history)
-        dx = w / max(n - 1, 1)
+            max_fps = max(max(self._fps_history), 60)
+            w, h = self.width(), self.height()
+            n = len(self._fps_history)
+            dx = w / max(n - 1, 1)
 
-        # 60 FPS reference line
-        y60 = h - int((60.0 / max_fps) * (h - 4)) - 2
-        painter.setPen(QPen(QColor(158, 206, 106, 60), 1, Qt.DashLine))
-        painter.drawLine(0, y60, w, y60)
+            # 60 FPS reference line
+            y60 = h - int((60.0 / max_fps) * (h - 4)) - 2
+            painter.setPen(QPen(QColor(158, 206, 106, 60), 1, Qt.DashLine))
+            painter.drawLine(0, y60, w, y60)
 
-        # FPS line
-        painter.setPen(QPen(QColor("#7aa2f7"), 1.5))
-        points = []
-        for i, fps in enumerate(self._fps_history):
-            x = int(i * dx)
-            y = h - int((fps / max_fps) * (h - 4)) - 2
-            points.append((x, y))
-        for i in range(len(points) - 1):
-            painter.drawLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
-
-        # NEW: RTF line (if we have RTF data)
-        if len(self._rtf_history) >= 2:
-            max_rtf = max(max(self._rtf_history), 1.5)
-            # Scale RTF so 1.0 maps to a visual reference
-            painter.setPen(QPen(QColor("#e0af68", 120), 1, Qt.DashLine))
-            rtf_points = []
-            for i, rtf in enumerate(self._rtf_history):
+            # FPS line
+            painter.setPen(QPen(QColor("#7aa2f7"), 1.5))
+            points = []
+            for i, fps in enumerate(self._fps_history):
                 x = int(i * dx)
-                # Map RTF to upper portion of graph (0-50% height)
-                y = h - int((rtf / max_rtf) * (h * 0.5)) - 2
-                rtf_points.append((x, y))
-            for i in range(len(rtf_points) - 1):
-                painter.drawLine(rtf_points[i][0], rtf_points[i][1],
-                                 rtf_points[i + 1][0], rtf_points[i + 1][1])
+                y = h - int((fps / max_fps) * (h - 4)) - 2
+                points.append((x, y))
+            for i in range(len(points) - 1):
+                painter.drawLine(points[i][0], points[i][1],
+                                 points[i + 1][0], points[i + 1][1])
 
-        last_fps = self._fps_history[-1]
-        last_rtf = self._rtf_history[-1] if self._rtf_history else 1.0
-        painter.setPen(QColor("#7aa2f7"))
-        painter.setFont(QFont("Consolas", 8))
-        painter.drawText(4, 12, f"{last_fps:.0f} FPS")
-        painter.setPen(QColor("#e0af68"))
-        painter.drawText(w - 70, 12, f"RTF {last_rtf:.2f}x")
-        painter.end()
+            # RTF line
+            if len(self._rtf_history) >= 2:
+                max_rtf = max(max(self._rtf_history), 1.5)
+                # FIX: Use QColor(r, g, b, a) instead of QColor(hex, alpha)
+                painter.setPen(QPen(QColor(224, 175, 104, 120), 1, Qt.DashLine))
+                rtf_points = []
+                for i, rtf in enumerate(self._rtf_history):
+                    x = int(i * dx)
+                    y = h - int((rtf / max_rtf) * (h * 0.5)) - 2
+                    rtf_points.append((x, y))
+                for i in range(len(rtf_points) - 1):
+                    painter.drawLine(rtf_points[i][0], rtf_points[i][1],
+                                     rtf_points[i + 1][0], rtf_points[i + 1][1])
+
+            last_fps = self._fps_history[-1]
+            last_rtf = self._rtf_history[-1] if self._rtf_history else 1.0
+            painter.setPen(QColor("#7aa2f7"))
+            painter.setFont(QFont("Consolas", 8))
+            painter.drawText(4, 12, f"{last_fps:.0f} FPS")
+            painter.setPen(QColor("#e0af68"))
+            painter.drawText(w - 70, 12, f"RTF {last_rtf:.2f}x")
+        finally:
+            painter.end()
 
 
 # ── Shortcuts Dialog ──────────────────────────────────────────

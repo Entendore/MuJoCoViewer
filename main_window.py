@@ -25,8 +25,6 @@ from scene_panels import (
     SensorPanel, KeyframePanel,
 )
 from config_panels import XMLEditor, RenderOptionsPanel
-from test_panel import TestPanel
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -46,9 +44,10 @@ class MainWindow(QMainWindow):
         self.last_real_time = time.time()
         self.last_sim_time = 0.0
         self.rtf = 0.0
-        self._step_count = 0                                            # NEW
+        self._rtf_real_time = time.time()
+        self._rtf_sim_time = 0.0
+        self._step_count = 0                                         
 
-        # NEW: Recent files
         self._settings = QSettings("MuJoCoViewer", "MuJoCoViewer")
         self._recent_files = self._settings.value("recent_files", [])
         if isinstance(self._recent_files, str):
@@ -143,10 +142,6 @@ class MainWindow(QMainWindow):
         oscroll.setWidgetResizable(True)
         oscroll.setWidget(self.options_panel)
         self.tabs.addTab(oscroll, "Options")
-
-        # ── Tests ──
-        self.test_panel = TestPanel(self)
-        self.tabs.addTab(self.test_panel, "Tests")
 
         # ── Log ──
         self.log_panel = LogPanel()
@@ -613,7 +608,7 @@ class MainWindow(QMainWindow):
 
     def _set_model(self, model, data):
         self.model, self.data = model, data
-        self._step_count = 0                                          # NEW
+        self._step_count = 0                                         
         try:
             mujoco.mj_forward(model, data)
         except Exception as e:
@@ -646,7 +641,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.error(f"Watch panel build error: {e}")
         try:
-            self.keyframe_panel.build(model, data)                    # NEW
+            self.keyframe_panel.build(model, data)                    
         except Exception as e:
             log.error(f"Keyframe panel build error: {e}")
         try:
@@ -664,6 +659,8 @@ class MainWindow(QMainWindow):
         )
         self.last_sim_time = data.time
         self.last_real_time = time.time()
+        self._rtf_real_time = time.time()
+        self._rtf_sim_time = data.time
 
     # ── Simulation controls ────────────────────────────────────
 
@@ -677,6 +674,9 @@ class MainWindow(QMainWindow):
         if self.playing:
             self.last_real_time = time.time()
             self.last_sim_time = self.data.time
+            # FIX: Reset RTF tracking when playback starts
+            self._rtf_real_time = time.time()
+            self._rtf_sim_time = self.data.time
             self._sim_time_accumulator = 0.0
             log.info("Simulation playing")
         else:
@@ -724,10 +724,12 @@ class MainWindow(QMainWindow):
             self.btn_play.setText("▶  Play")
             self.viewport._paused = False
             self._sim_time_accumulator = 0.0
-            self._step_count = 0                                      # NEW
-            self.viewport._step_count = 0                              # NEW
+            self._step_count = 0                                      
+            self.viewport._step_count = 0                             
             self.last_sim_time = self.data.time
             self.last_real_time = time.time()
+            self._rtf_real_time = time.time()
+            self._rtf_sim_time = self.data.time
             self.viewport.clear_traces()
             self._update_ui()
             self.viewport._toast.show_message("Simulation reset")
@@ -881,8 +883,8 @@ class MainWindow(QMainWindow):
                 if step_count >= max_steps:
                     self._sim_time_accumulator = 0.0
 
-                self._step_count += step_count                        # NEW
-                self.viewport.increment_step_count(step_count)        # NEW
+                self._step_count += step_count
+                self.viewport.increment_step_count(step_count)
                 self.viewport.record_trace()
 
                 # NEW: Recording
@@ -923,18 +925,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.debug(f"Watch refresh error: {e}")
         self.status_time.setText(f"Time: {self.data.time:.3f}s")
-        self.status_step.setText(f"Step: {self._step_count}")         # NEW
+        self.status_step.setText(f"Step: {self._step_count}")       
 
     def _calc_fps(self):
         self.frame_count += 1
         now = time.time()
 
-        sim_dt = self.data.time - self.last_sim_time
-        real_dt = now - self.last_real_time
-        if real_dt > 0.2:
-            self.rtf = sim_dt / real_dt if real_dt > 0 else 0
-            self.last_sim_time = self.data.time
-            self.last_real_time = now
+        # FIX: Use separate timestamps for RTF so it works during playback
+        rtf_real_dt = now - self._rtf_real_time
+        if rtf_real_dt > 0.2:
+            sim_dt = self.data.time - self._rtf_sim_time
+            self.rtf = sim_dt / rtf_real_dt if rtf_real_dt > 0 else 0
+            self._rtf_real_time = now
+            self._rtf_sim_time = self.data.time
             self.status_rtf.setText(f"RTF: {self.rtf:.2f}x")
 
         elapsed = now - self.last_fps_time
@@ -944,7 +947,7 @@ class MainWindow(QMainWindow):
             self.last_fps_time = now
             self.status_fps.setText(f"FPS: {self.fps:.0f}")
             self.viewport._fps = self.fps
-            self.fps_graph.add_fps(self.fps, self.rtf)               # IMPROVED: pass RTF
+            self.fps_graph.add_fps(self.fps, self.rtf)
 
     # NEW: Clean up on close
     def closeEvent(self, event):

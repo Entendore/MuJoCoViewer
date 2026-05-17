@@ -443,7 +443,10 @@ class RenderOptionsPanel(QWidget):
             self.viewport.set_camera_preset(az, el)
 
     def _on_follow_changed(self, idx):
-        self.viewport.set_follow_body(idx)
+        if idx <= 0:
+            self.viewport.set_follow_body(-1)
+        else:
+            self.viewport.set_follow_body(idx)
 
     def _fit_camera(self):
         self.viewport.reset_camera()
@@ -508,16 +511,15 @@ class RenderOptionsPanel(QWidget):
             self.viewport.vopt.label = val
             self.viewport.render()
 
-    # NEW: Render quality
     def _on_quality_changed(self, idx):
-        # Quality affects sample count or resolution — simple approximation
+        # Quality affects rendering — simple approximation via shadow flag
         try:
-            if idx == 0:  # Low
-                self.viewport.renderer.scene.flags = 0
-            elif idx == 1:  # Medium
-                pass
-            elif idx == 2:  # High
-                self.viewport.renderer.scene.flags = 0
+            if idx == 0:  # Low — disable shadows
+                self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = False
+            elif idx == 1:  # Medium — default
+                self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = True
+            elif idx == 2:  # High — enable shadows
+                self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = True
         except Exception:
             pass
         self.viewport.render()

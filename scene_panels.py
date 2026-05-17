@@ -31,6 +31,16 @@ class BodyTreePanel(QWidget):
         search_row.addWidget(self.search_input)
         layout.addLayout(search_row)
 
+        # Create the tree FIRST so we can reference it
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setColumnWidth(0, 160)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
+
+        # Now the filter row can safely reference self.tree
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter:"))
         self.filter_combo = QComboBox()
@@ -47,17 +57,10 @@ class BodyTreePanel(QWidget):
         filter_row.addWidget(collapse_btn)
         layout.addLayout(filter_row)
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setColumnWidth(0, 160)
-        self.tree.itemDoubleClicked.connect(self._on_double_click)
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.tree)
 
         self._model = None
-        self._all_items = {}  # NEW: store items for filtering
+        self._all_items = {}
 
     def build(self, model):
         self._model = model
@@ -91,17 +94,30 @@ class BodyTreePanel(QWidget):
             else:
                 items[parent].addChild(item)
             items[i] = item
-            self._all_items[i] = (name, njnt, ngeom, item)  # NEW
+            self._all_items[i] = (name, njnt, ngeom, item)
         self.tree.expandAll()
 
-    # NEW: Apply text filter
     def _apply_filter(self):
         search = self.search_input.text().strip().lower()
+        filter_mode = self.filter_combo.currentText()
         for body_id, (name, njnt, ngeom, item) in self._all_items.items():
-            if not search:
-                item.setHidden(False)
-            else:
-                item.setHidden(search not in name.lower())
+            hidden = False
+            # Text search filter
+            if search and search not in name.lower():
+                hidden = True
+            # Combo filter
+            if filter_mode == "Joints" and njnt == 0:
+                hidden = True
+            elif filter_mode == "No Children":
+                # Check if this body has any children
+                has_child = any(
+                    bid == body_id
+                    for bid in range(self._model.nbody)
+                    if self._model.body_parentid[bid] == body_id
+                ) if self._model else False
+                if has_child:
+                    hidden = True
+            item.setHidden(hidden)
 
     def _on_double_click(self, item, column):
         body_id = item.data(0, Qt.UserRole)
@@ -149,7 +165,7 @@ class WatchPanel(QWidget):
 
         layout.addLayout(add_row)
 
-        # NEW: Quick-add presets
+        # Quick-add presets
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("Quick:"))
         btn_qpos = QPushButton("All qpos")
@@ -188,7 +204,6 @@ class WatchPanel(QWidget):
         self._watches.append((cat, idx, label))
         self._rebuild_table()
 
-    # NEW: Quick add all qpos
     def _add_all_qpos(self):
         if self._data is None:
             return
@@ -198,7 +213,6 @@ class WatchPanel(QWidget):
                 self._watches.append(("qpos", i, f"qpos[{i}]"))
         self._rebuild_table()
 
-    # NEW: Quick add all ctrl
     def _add_all_ctrl(self):
         if self._data is None:
             return
@@ -367,7 +381,7 @@ class EnergyPanel(QWidget):
         layout.addWidget(gp)
         layout.addWidget(gt)
 
-        # NEW: Energy history graph
+        # Energy history graph
         self._history_graph = EnergyHistoryGraph()
         layout.addWidget(self._history_graph)
 
@@ -394,13 +408,11 @@ class EnergyPanel(QWidget):
                 bar.setRange(int(-max_e), int(max_e))
                 bar.setValue(int(val))
                 bar.setFormat(f"{val:.2f} J")
-            # NEW: Update history graph
             self._history_graph.add_data(ke, pe, total)
         except Exception:
             pass
 
 
-# NEW: Energy history sparkline graph
 class EnergyHistoryGraph(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -444,9 +456,9 @@ class EnergyHistoryGraph(QWidget):
                 y = h - int(((v - min_v) / span) * (h - 8)) - 4
                 points.append((x, y))
             for i in range(len(points) - 1):
-                painter.drawLine(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+                painter.drawLine(points[i][0], points[i][1],
+                                 points[i + 1][0], points[i + 1][1])
 
-        # Legend
         painter.setFont(QFont("Consolas", 7))
         painter.setPen(QColor("#f7768e"))
         painter.drawText(4, 10, "KE")
@@ -463,13 +475,12 @@ class ContactsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # NEW: Header row with count and auto-refresh
         header_row = QHBoxLayout()
         self.count_lbl = QLabel("0 contacts")
         self.count_lbl.setProperty("class", "dim")
         header_row.addWidget(self.count_lbl)
         header_row.addStretch()
-        self.auto_refresh_cb = QComboBox()                            # IMPROVED: refresh rate
+        self.auto_refresh_cb = QComboBox()
         self.auto_refresh_cb.addItems(["Auto", "Every 5s", "Manual"])
         self.auto_refresh_cb.setMaximumWidth(100)
         header_row.addWidget(self.auto_refresh_cb)
@@ -480,8 +491,8 @@ class ContactsPanel(QWidget):
         layout.addLayout(header_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)                                  # IMPROVED: +1 for normal
-        self.table.setHorizontalHeaderLabels(["Geom 1", "Geom 2", "Distance", "Force", "Normal"])  # NEW
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Geom 1", "Geom 2", "Distance", "Force", "Normal"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -498,13 +509,12 @@ class ContactsPanel(QWidget):
         if model is None or data is None:
             return
 
-        # Throttle refresh based on combo setting
         mode = self.auto_refresh_cb.currentText()
         if mode == "Manual" and not self._force_refresh_flag:
             return
         if mode == "Every 5s":
             self._refresh_counter += 1
-            if self._refresh_counter % 300 != 0 and not self._force_refresh_flag:  # ~5s at 60fps
+            if self._refresh_counter % 300 != 0 and not self._force_refresh_flag:
                 return
 
         self._force_refresh_flag = False
@@ -524,7 +534,6 @@ class ContactsPanel(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(g1_name))
             self.table.setItem(i, 1, QTableWidgetItem(g2_name))
             dist_item = QTableWidgetItem(f"{c.dist:.5f}")
-            # NEW: Color-code distance (green=separated, red=penetrating)
             if c.dist < 0:
                 dist_item.setForeground(QColor("#f7768e"))
             elif c.dist < 0.001:
@@ -537,14 +546,12 @@ class ContactsPanel(QWidget):
                 mujoco.mj_contactForce(model, data, i, force)
                 f_norm = float(np.linalg.norm(force[:3]))
                 force_item = QTableWidgetItem(f"{f_norm:.2f}")
-                # NEW: Color-code force magnitude
                 if f_norm > 100:
                     force_item.setForeground(QColor("#f7768e"))
                 elif f_norm > 10:
                     force_item.setForeground(QColor("#e0af68"))
                 self.table.setItem(i, 3, force_item)
-                # NEW: Contact normal
-                normal = c.frame[:3]  # x-axis of contact frame
+                normal = c.frame[:3]
                 self.table.setItem(i, 4, QTableWidgetItem(
                     f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
                 ))
@@ -553,10 +560,6 @@ class ContactsPanel(QWidget):
                 self.table.setItem(i, 4, QTableWidgetItem("—"))
 
 
-# ═══════════════════════════════════════════════════════════════
-# NEW: Keyframe Panel
-# ═══════════════════════════════════════════════════════════════
-
 class KeyframePanel(QWidget):
     """Save and restore simulation keyframes (qpos, qvel, ctrl)."""
     load_keyframe = Signal(dict)
@@ -564,12 +567,11 @@ class KeyframePanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model, self._data = None, None
-        self._keyframes = {}  # name -> {qpos, qvel, ctrl}
+        self._keyframes = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Save row
         save_row = QHBoxLayout()
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Keyframe name…")
@@ -580,13 +582,11 @@ class KeyframePanel(QWidget):
         save_row.addWidget(save_btn)
         layout.addLayout(save_row)
 
-        # Keyframe list
         self.kf_list = QListWidget()
         self.kf_list.setAlternatingRowColors(True)
         self.kf_list.itemDoubleClicked.connect(self._on_load)
         layout.addWidget(self.kf_list)
 
-        # Action row
         action_row = QHBoxLayout()
         load_btn = QPushButton("📂 Load Selected")
         load_btn.clicked.connect(lambda: self._on_load(self.kf_list.currentItem()))
@@ -604,8 +604,6 @@ class KeyframePanel(QWidget):
 
     def build(self, model, data):
         self._model, self._data = model, data
-        # Keep existing keyframes even when model changes
-        # but they may be incompatible — warn user
         if self._keyframes and model is not None:
             nq = model.nq
             for name, kf in list(self._keyframes.items()):
@@ -640,7 +638,7 @@ class KeyframePanel(QWidget):
     def _on_load(self, item):
         if item is None or self._data is None:
             return
-        name = item.text()
+        name = item.text().split("  ")[0]  # strip the time suffix
         if name not in self._keyframes:
             return
         kf = self._keyframes[name]
@@ -660,7 +658,7 @@ class KeyframePanel(QWidget):
         item = self.kf_list.currentItem()
         if item is None:
             return
-        name = item.text()
+        name = item.text().split("  ")[0]
         if name in self._keyframes:
             del self._keyframes[name]
             self._rebuild_list()
@@ -673,4 +671,4 @@ class KeyframePanel(QWidget):
         self.kf_list.clear()
         for name, kf in self._keyframes.items():
             item = QListWidgetItem(f"{name}  (t={kf['time']:.2f}s)")
-            self.kf_list.addItem(item)                                   
+            self.kf_list.addItem(item)

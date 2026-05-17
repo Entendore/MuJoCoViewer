@@ -501,8 +501,9 @@ class MujocoViewport(QWidget):
             self._try_select(event.position())
             self._perturbing = True
             return
-        # NEW: Double-click focus
-        if event.button() == Qt.LeftButton and event.flags() & Qt.MouseEventCreatedDoubleClick:
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
             self._try_select(event.position())
 
     def mouseReleaseEvent(self, event):
