@@ -38,4 +38,6 @@ dist/
 
 # >>> AUTO DISCOVERED RULES >>>
 __pycache__/
+MUJOCO_LOG.TXT
+mujoco_*.png
 # <<< AUTO DISCOVERED RULES <<<
