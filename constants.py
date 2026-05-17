@@ -30,19 +30,50 @@ QPOS_DIMS = {
     mujoco.mjtJoint.mjJNT_HINGE: 1,
 }
 
-# ── Actuator type display names ───────────────────────────────
-# mujoco.mjtActuator is NOT exposed in Python bindings,
-# so we hardcode the C enum integer values from mujoco.h.
-ACTUATOR_TYPE_NAMES = {
-    0: "Motor",
-    1: "Position",
-    2: "Velocity",
-    3: "Intensity",
-    4: "Additive",
-    5: "Absvel",
-    6: "Relvel",
-    7: "User",
-}
+# ── Actuator dynamics type display names ───────────────────────
+# Maps actuator_dyntype (mjtDyn) values to display names.
+# In MuJoCo 3.x+, the old actuator_type enum was split into
+# dyntype / gaintype / biastype; we use dyntype as the primary label.
+ACTUATOR_TYPE_NAMES = {}
+for name in ["mjDYN_NONE", "mjDYN_INTEGRATOR", "mjDYN_FILTER",
+             "mjDYN_MUSCLE", "mjDYN_USER"]:
+    if hasattr(mujoco, 'mjtDyn') and hasattr(mujoco.mjtDyn, name):
+        ACTUATOR_TYPE_NAMES[int(getattr(mujoco.mjtDyn, name))] = name[6:].title()
+if not ACTUATOR_TYPE_NAMES:
+    # Fallback if mjtDyn enum is not available
+    ACTUATOR_TYPE_NAMES = {
+        0: "None", 1: "Integrator", 2: "Filter", 3: "Muscle", 4: "User",
+    }
+
+# ── Sensor type display names ──────────────────────────────────
+# Dynamically built from mujoco.mjtSensor so it stays in sync
+# with the installed MuJoCo version.
+SENSOR_TYPE_NAMES = {}
+if hasattr(mujoco, 'mjtSensor'):
+    for attr_name in dir(mujoco.mjtSensor):
+        if attr_name.startswith("mjSENS_"):
+            val = getattr(mujoco.mjtSensor, attr_name)
+            display = attr_name[7:].replace('_', ' ').title()
+            SENSOR_TYPE_NAMES[int(val)] = display
+if not SENSOR_TYPE_NAMES:
+    # Fallback for older MuJoCo versions
+    SENSOR_TYPE_NAMES = {
+        0: "None", 1: "Magnetometer", 2: "Gyro", 3: "Accelerometer",
+        4: "Velocimeter", 5: "GyroF", 6: "AccelerometerF",
+        7: "VelocimeterF", 8: "Force", 9: "Torque", 10: "ForceF",
+        11: "TorqueF", 12: "Jointpos", 13: "Jointvel",
+        14: "Tendonpos", 15: "Tendonvel", 16: "Actuatorpos",
+        17: "Actuatorvel", 18: "Actuatorfrc",
+        19: "Balljointang", 20: "Balljointvel",
+        21: "Jointlimitpos", 22: "Jointlimitvel",
+        23: "Tendonlimitpos", 24: "Tendonlimitvel",
+        25: "Framepos", 26: "Framequat", 27: "Framexaxis",
+        28: "Frameyaxis", 29: "Framezaxis",
+        30: "Framelinvel", 31: "Frameangvel",
+        32: "Framelinacc", 33: "Frameangacc",
+        34: "Subtreecom", 35: "Subtreelinvel", 36: "Subtreeangmom",
+        100: "User",
+    }
 
 # ── Camera presets ─────────────────────────────────────────────
 CAMERA_PRESETS = [
@@ -120,6 +151,20 @@ EXAMPLES["Demo Scene"] = """
     </body>
   </worldbody>
   <actuator><motor name="cart_force" joint="cart_x" ctrlrange="-50 50" ctrllimited="true"/></actuator>
+  <sensor>
+    <jointpos name="pend1_pos" joint="pend1"/>
+    <jointvel name="pend1_vel" joint="pend1"/>
+    <jointpos name="pend2_pos" joint="pend2"/>
+    <jointvel name="pend2_vel" joint="pend2"/>
+    <jointpos name="cart_pos" joint="cart_x"/>
+    <jointvel name="cart_vel" joint="cart_x"/>
+    <jointpos name="pole_angle" joint="pole_hinge"/>
+    <jointvel name="pole_vel" joint="pole_hinge"/>
+    <actuatorpos name="cart_act_pos" actuator="cart_force"/>
+    <actuatorfrc name="cart_act_frc" actuator="cart_force"/>
+    <framepos name="pend_bob_pos" objtype="geom" objname="pend_bob"/>
+    <framepos name="arm_wrist_pos" objtype="body" objname="arm_wrist"/>
+  </sensor>
 </mujoco>
 """
 
@@ -141,6 +186,14 @@ EXAMPLES["Cartpole"] = """
   <actuator>
     <motor name="force" joint="slider" ctrlrange="-100 100" ctrllimited="true"/>
   </actuator>
+  <sensor>
+    <jointpos name="slider_pos" joint="slider"/>
+    <jointvel name="slider_vel" joint="slider"/>
+    <jointpos name="hinge_pos" joint="hinge"/>
+    <jointvel name="hinge_vel" joint="hinge"/>
+    <actuatorfrc name="force_applied" actuator="force"/>
+    <framepos name="pole_tip_pos" objtype="body" objname="pole"/>
+  </sensor>
 </mujoco>
 """
 
@@ -197,6 +250,18 @@ EXAMPLES["Ant (Quadruped)"] = """
     <motor name="hip_4" joint="hip_4" ctrlrange="-1 1"/>
     <motor name="ankle_4" joint="ankle_4" ctrlrange="-1 1"/>
   </actuator>
+  <sensor>
+    <jointpos name="hip_1_pos" joint="hip_1"/>
+    <jointpos name="hip_2_pos" joint="hip_2"/>
+    <jointpos name="hip_3_pos" joint="hip_3"/>
+    <jointpos name="hip_4_pos" joint="hip_4"/>
+    <actuatorfrc name="hip_1_frc" actuator="hip_1"/>
+    <actuatorfrc name="hip_2_frc" actuator="hip_2"/>
+    <actuatorfrc name="hip_3_frc" actuator="hip_3"/>
+    <actuatorfrc name="hip_4_frc" actuator="hip_4"/>
+    <framepos name="torso_pos" objtype="body" objname="torso"/>
+    <framelinvel name="torso_vel" objtype="body" objname="torso"/>
+  </sensor>
 </mujoco>
 """
 
@@ -227,6 +292,18 @@ EXAMPLES["Robotic Gripper"] = """
     <position name="finger_L_pos" joint="finger_L_slide" kp="20" ctrlrange="-0.04 0.04"/>
     <position name="finger_R_pos" joint="finger_R_slide" kp="20" ctrlrange="-0.04 0.04"/>
   </actuator>
+  <sensor>
+    <jointpos name="lift_pos" joint="lift"/>
+    <jointvel name="lift_vel" joint="lift"/>
+    <jointpos name="finger_L_pos" joint="finger_L_slide"/>
+    <jointpos name="finger_R_pos" joint="finger_R_slide"/>
+    <actuatorpos name="lift_act" actuator="lift_pos"/>
+    <actuatorfrc name="lift_frc" actuator="lift_pos"/>
+    <actuatorfrc name="finger_L_frc" actuator="finger_L_pos"/>
+    <actuatorfrc name="finger_R_frc" actuator="finger_R_pos"/>
+    <framepos name="box_pos" objtype="body" objname="box"/>
+    <framepos name="base_pos" objtype="body" objname="base"/>
+  </sensor>
 </mujoco>
 """
 
@@ -254,6 +331,14 @@ EXAMPLES["Bouncing Balls"] = """
       <geom type="sphere" size="0.15" mass="0.5" rgba="0.2 0.9 0.2 1"/>
     </body>
   </worldbody>
+  <sensor>
+    <framepos name="ball1_pos" objtype="body" objname="ball1"/>
+    <framelinvel name="ball1_vel" objtype="body" objname="ball1"/>
+    <framepos name="ball2_pos" objtype="body" objname="ball2"/>
+    <framelinvel name="ball2_vel" objtype="body" objname="ball2"/>
+    <framepos name="ball3_pos" objtype="body" objname="ball3"/>
+    <framelinvel name="ball3_vel" objtype="body" objname="ball3"/>
+  </sensor>
 </mujoco>
 """
 
@@ -304,6 +389,18 @@ EXAMPLES["Humanoid Stick"] = """
       </body>
     </body>
   </worldbody>
+  <sensor>
+    <framepos name="torso_pos" objtype="body" objname="torso"/>
+    <framelinvel name="torso_linvel" objtype="body" objname="torso"/>
+    <frameangvel name="torso_angvel" objtype="body" objname="torso"/>
+    <jointpos name="elbow_R_pos" joint="elbow_R"/>
+    <jointvel name="elbow_R_vel" joint="elbow_R"/>
+    <jointpos name="knee_R_pos" joint="knee_R"/>
+    <jointvel name="knee_R_vel" joint="knee_R"/>
+    <jointpos name="knee_L_pos" joint="knee_L"/>
+    <jointvel name="knee_L_vel" joint="knee_L"/>
+    <subtreecom name="torso_com" body="torso"/>
+  </sensor>
 </mujoco>
 """
 
@@ -347,6 +444,22 @@ EXAMPLES["Walker"] = """
     <motor name="torso_rx" joint="torso_rx" ctrlrange="-30 30" ctrllimited="true"/>
     <motor name="torso_ry" joint="torso_ry" ctrlrange="-30 30" ctrllimited="true"/>
   </actuator>
+  <sensor>
+    <jointpos name="hip_R_pos" joint="hip_R"/>
+    <jointvel name="hip_R_vel" joint="hip_R"/>
+    <jointpos name="knee_R_pos" joint="knee_R"/>
+    <jointvel name="knee_R_vel" joint="knee_R"/>
+    <jointpos name="hip_L_pos" joint="hip_L"/>
+    <jointvel name="hip_L_vel" joint="hip_L"/>
+    <jointpos name="knee_L_pos" joint="knee_L"/>
+    <jointvel name="knee_L_vel" joint="knee_L"/>
+    <actuatorfrc name="hip_R_frc" actuator="hip_R"/>
+    <actuatorfrc name="knee_R_frc" actuator="knee_R"/>
+    <actuatorfrc name="hip_L_frc" actuator="hip_L"/>
+    <actuatorfrc name="knee_L_frc" actuator="knee_L"/>
+    <framepos name="torso_pos" objtype="body" objname="torso"/>
+    <framelinvel name="torso_vel" objtype="body" objname="torso"/>
+  </sensor>
 </mujoco>
 """
 
@@ -376,6 +489,16 @@ EXAMPLES["Swimmer"] = """
     <motor name="motor1" joint="joint1" ctrlrange="-1 1" ctrllimited="true"/>
     <motor name="motor2" joint="joint2" ctrlrange="-1 1" ctrllimited="true"/>
   </actuator>
+  <sensor>
+    <jointpos name="joint1_pos" joint="joint1"/>
+    <jointvel name="joint1_vel" joint="joint1"/>
+    <jointpos name="joint2_pos" joint="joint2"/>
+    <jointvel name="joint2_vel" joint="joint2"/>
+    <actuatorfrc name="motor1_frc" actuator="motor1"/>
+    <actuatorfrc name="motor2_frc" actuator="motor2"/>
+    <framepos name="head_pos" objtype="body" objname="head"/>
+    <framelinvel name="head_vel" objtype="body" objname="head"/>
+  </sensor>
 </mujoco>
 """
 
@@ -396,6 +519,14 @@ EXAMPLES["Double Pendulum"] = """
       </body>
     </body>
   </worldbody>
+  <sensor>
+    <jointpos name="theta1_pos" joint="theta1"/>
+    <jointvel name="theta1_vel" joint="theta1"/>
+    <jointpos name="theta2_pos" joint="theta2"/>
+    <jointvel name="theta2_vel" joint="theta2"/>
+    <framepos name="tip_pos" objtype="geom" objname="tip"/>
+    <framelinvel name="tip_vel" objtype="geom" objname="tip"/>
+  </sensor>
 </mujoco>
 """
 

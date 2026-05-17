@@ -63,7 +63,7 @@ class ActuatorPanel(QWidget):
             if hi <= lo:
                 hi = lo + 1.0
 
-            atype = int(model.actuator_type[i]) if hasattr(model, 'actuator_type') else 0
+            atype = int(model.actuator_dyntype[i])
             atype_name = ACTUATOR_TYPE_NAMES.get(atype, "Motor")
 
             group = QGroupBox(f"{name}")
@@ -139,22 +139,8 @@ class ActuatorPanel(QWidget):
         for cb in self._reset_cbs:
             cb()
 
-    @staticmethod
-    def _make_slider_cb(act_id, lo, hi, lbl, spin):
-        def cb(val):
-            v = lo + (val / 1000.0) * (hi - lo)
-            # Write to MjData — the main window's _tick reads this
-            cb._data = None  # will be set below
-            lbl.setText(f"{v:.3f}")
-            spin.blockSignals(True)
-            spin.setValue(v)
-            spin.blockSignals(False)
-            ActuatorPanel._update_value_style(lbl, v, lo, hi)
-        # Stash data reference via closure — set in build
-        return cb
-
     def _make_slider_cb(self, act_id, lo, hi, lbl, spin):
-        """Instance method version that can access self._data."""
+        """Slider → update data, label, and spin box."""
         def cb(val):
             v = lo + (val / 1000.0) * (hi - lo)
             self._data.ctrl[act_id] = v

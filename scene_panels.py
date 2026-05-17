@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPainter, QColor, QPen
 import mujoco
 from widgets import log
+from constants import SENSOR_TYPE_NAMES
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -248,7 +249,15 @@ class WatchPanel(QWidget):
                     val = float(arr[idx])
                     item = self.watch_table.item(i, 1)
                     if item:
-                        item.setText(f"{val:.6f}")
+                        if np.isnan(val):
+                            item.setText("NaN")
+                            item.setForeground(QColor("#f7768e"))
+                        elif np.isinf(val):
+                            item.setText("Inf")
+                            item.setForeground(QColor("#f7768e"))
+                        else:
+                            item.setText(f"{val:.6f}")
+                            item.setForeground(QColor("#a9b1d6"))
             except Exception:
                 pass
 
@@ -258,23 +267,7 @@ class WatchPanel(QWidget):
 # ═══════════════════════════════════════════════════════════════
 
 class SensorPanel(QWidget):
-    _SENSOR_TYPE_NAMES = {
-        0: "None", 1: "Magnetometer", 2: "Gyro", 3: "Accelerometer",
-        4: "Velocimeter", 5: "GyroF", 6: "AccelerometerF",
-        7: "VelocimeterF", 8: "Force", 9: "Torque", 10: "ForceF",
-        11: "TorqueF", 12: "JointPos", 13: "JointVel",
-        14: "TendonPos", 15: "TendonVel", 16: "ActuatorPos",
-        17: "ActuatorVel", 18: "ActuatorFrc",
-        19: "BallJointAng", 20: "BallJointVel",
-        21: "JointLimitPos", 22: "JointLimitVel",
-        23: "TendonLimitPos", 24: "TendonLimitVel",
-        25: "FramePos", 26: "FrameQuat", 27: "FrameXaxis",
-        28: "FrameYaxis", 29: "FrameZaxis",
-        30: "FrameLinVel", 31: "FrameAngVel",
-        32: "FrameLinAcc", 33: "FrameAngAcc",
-        34: "SubtreeCom", 35: "SubtreeLinVel", 36: "SubtreeAngMom",
-        100: "User",
-    }
+    """Sensor data viewer using the shared SENSOR_TYPE_NAMES from constants."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -286,7 +279,7 @@ class SensorPanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 80)
+        self.table.setColumnWidth(1, 110)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
@@ -309,7 +302,7 @@ class SensorPanel(QWidget):
                 or f"sensor_{i}"
             )
             stype = int(model.sensor_type[i])
-            type_name = self._SENSOR_TYPE_NAMES.get(stype, f"type_{stype}")
+            type_name = SENSOR_TYPE_NAMES.get(stype, f"type_{stype}")
             dim = int(model.sensor_dim[i])
             self._sensor_adr.append(int(model.sensor_adr[i]))
             self._sensor_dim.append(dim)
@@ -324,16 +317,49 @@ class SensorPanel(QWidget):
             try:
                 adr = self._sensor_adr[i]
                 dim = self._sensor_dim[i]
-                if dim == 1:
-                    val = f"{float(data.sensordata[adr]):.4f}"
-                elif dim <= 3:
-                    vals = [f"{float(data.sensordata[adr + j]):.4f}" for j in range(dim)]
-                    val = f"({', '.join(vals)})"
-                else:
-                    val = f"[{dim} values]"
                 item = self.table.item(i, 2)
-                if item:
+                if item is None:
+                    continue
+                if dim == 1:
+                    val = float(data.sensordata[adr])
+                    if np.isnan(val):
+                        item.setText("NaN")
+                        item.setForeground(QColor("#f7768e"))
+                    elif np.isinf(val):
+                        item.setText("Inf")
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setText(f"{val:.4f}")
+                        item.setForeground(QColor("#a9b1d6"))
+                elif dim <= 3:
+                    vals = []
+                    has_nan = False
+                    has_inf = False
+                    for j in range(dim):
+                        v = float(data.sensordata[adr + j])
+                        if np.isnan(v):
+                            vals.append("NaN")
+                            has_nan = True
+                        elif np.isinf(v):
+                            vals.append("Inf")
+                            has_inf = True
+                        else:
+                            vals.append(f"{v:.4f}")
+                    val = f"({', '.join(vals)})"
                     item.setText(val)
+                    if has_nan or has_inf:
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setForeground(QColor("#a9b1d6"))
+                else:
+                    # Check for NaN/Inf in multi-dim sensors
+                    raw = data.sensordata[adr:adr + dim]
+                    if np.any(np.isnan(raw)) or np.any(np.isinf(raw)):
+                        item.setText(f"[{dim} values — NaN/Inf]")
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setText(f"[{dim} values]")
+                        item.setForeground(QColor("#a9b1d6"))
             except Exception:
                 pass
 
@@ -397,6 +423,14 @@ class EnergyPanel(QWidget):
                 model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
                 mujoco.mj_forward(model, data)
             ke, pe = float(data.energy[0]), float(data.energy[1])
+
+            # Handle NaN/Inf gracefully
+            if not (np.isfinite(ke) and np.isfinite(pe)):
+                self.kinetic_lbl.setText("NaN" if np.isnan(ke) else f"{ke:.3f} J")
+                self.potential_lbl.setText("NaN" if np.isnan(pe) else f"{pe:.3f} J")
+                self.total_lbl.setText("—")
+                return
+
             total = ke + pe
             self.kinetic_lbl.setText(f"{ke:.3f} J")
             self.potential_lbl.setText(f"{pe:.3f} J")
@@ -426,10 +460,12 @@ class EnergyHistoryGraph(QWidget):
         self._total: deque = deque(maxlen=200)
 
     def add_data(self, ke, pe, total):
-        self._ke.append(ke)
-        self._pe.append(pe)
-        self._total.append(total)
-        self.update()
+        # Only add finite values to the history graph
+        if np.isfinite(ke) and np.isfinite(pe) and np.isfinite(total):
+            self._ke.append(ke)
+            self._pe.append(pe)
+            self._total.append(total)
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -541,29 +577,41 @@ class ContactsPanel(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(g1_name))
             self.table.setItem(i, 1, QTableWidgetItem(g2_name))
 
-            dist_item = QTableWidgetItem(f"{c.dist:.5f}")
-            if c.dist < 0:
+            dist_val = float(c.dist)
+            if np.isnan(dist_val) or np.isinf(dist_val):
+                dist_item = QTableWidgetItem("NaN" if np.isnan(dist_val) else "Inf")
                 dist_item.setForeground(QColor("#f7768e"))
-            elif c.dist < 0.001:
-                dist_item.setForeground(QColor("#e0af68"))
             else:
-                dist_item.setForeground(QColor("#9ece6a"))
+                dist_item = QTableWidgetItem(f"{dist_val:.5f}")
+                if dist_val < 0:
+                    dist_item.setForeground(QColor("#f7768e"))
+                elif dist_val < 0.001:
+                    dist_item.setForeground(QColor("#e0af68"))
+                else:
+                    dist_item.setForeground(QColor("#9ece6a"))
             self.table.setItem(i, 2, dist_item)
 
             try:
                 force = np.zeros(6)
                 mujoco.mj_contactForce(model, data, i, force)
                 f_norm = float(np.linalg.norm(force[:3]))
-                force_item = QTableWidgetItem(f"{f_norm:.2f}")
-                if f_norm > 100:
+                if np.isnan(f_norm) or np.isinf(f_norm):
+                    force_item = QTableWidgetItem("NaN" if np.isnan(f_norm) else "Inf")
                     force_item.setForeground(QColor("#f7768e"))
-                elif f_norm > 10:
-                    force_item.setForeground(QColor("#e0af68"))
+                else:
+                    force_item = QTableWidgetItem(f"{f_norm:.2f}")
+                    if f_norm > 100:
+                        force_item.setForeground(QColor("#f7768e"))
+                    elif f_norm > 10:
+                        force_item.setForeground(QColor("#e0af68"))
                 self.table.setItem(i, 3, force_item)
                 normal = c.frame[:3]
-                self.table.setItem(i, 4, QTableWidgetItem(
-                    f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
-                ))
+                if np.all(np.isfinite(normal)):
+                    self.table.setItem(i, 4, QTableWidgetItem(
+                        f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
+                    ))
+                else:
+                    self.table.setItem(i, 4, QTableWidgetItem("—"))
             except Exception:
                 self.table.setItem(i, 3, QTableWidgetItem("—"))
                 self.table.setItem(i, 4, QTableWidgetItem("—"))

@@ -192,9 +192,19 @@ class MujocoViewport(QWidget):
         if self.renderer is None or self.model is None:
             return
         try:
+            # Guard against NaN/Inf in simulation state — if qpos is
+            # NaN the scene update will fail, so skip rendering and
+            # show a warning overlay instead.
+            if self.data is not None and np.any(np.isnan(self.data.qpos)):
+                self._render_error_count += 1
+                self.update()
+                return
+
             # Camera follow
             if 0 <= self._follow_body_id < self.model.nbody:
-                self.cam.lookat = self.data.xipos[self._follow_body_id].copy()
+                pos = self.data.xipos[self._follow_body_id]
+                if np.all(np.isfinite(pos)):
+                    self.cam.lookat = pos.copy()
 
             # Highlight selected body
             if 0 <= self._highlight_body < self.model.nbody:
@@ -445,7 +455,13 @@ class MujocoViewport(QWidget):
         else:
             painter.setPen(QColor(200, 200, 220))
             painter.setFont(QFont("Segoe UI", 16))
-            if self.model is not None and self.renderer is not None:
+            if self.model is not None and self.data is not None and np.any(np.isnan(self.data.qpos)):
+                painter.drawText(
+                    self.rect(), Qt.AlignCenter,
+                    "⚠  Simulation diverged (NaN detected)\n"
+                    "Press R to reset the simulation",
+                )
+            elif self.model is not None and self.renderer is not None:
                 painter.drawText(
                     self.rect(), Qt.AlignCenter,
                     "Rendering failed — check Log tab",
