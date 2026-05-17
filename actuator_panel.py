@@ -11,15 +11,19 @@ from constants import ACTUATOR_TYPE_NAMES
 
 
 class ActuatorPanel(QWidget):
+    """Scrollable panel of per-actuator slider + spin-box controls."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model, self._data = None, None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
-        self._actuator_count = 0  # NEW: track count for tests
+        self._actuator_count = 0
+        self._reset_cbs: list = []
 
     def build(self, model, data):
         self._model, self._data = model, data
+        # Clear old widgets
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():
@@ -34,8 +38,9 @@ class ActuatorPanel(QWidget):
             return
 
         self._actuator_count = model.nu
+        self._reset_cbs = []
 
-        # NEW: Reset All button at the top
+        # Header row
         top_row = QHBoxLayout()
         info_lbl = QLabel(f"{model.nu} actuator{'s' if model.nu != 1 else ''}")
         info_lbl.setProperty("class", "dim")
@@ -44,11 +49,9 @@ class ActuatorPanel(QWidget):
         reset_all_btn = QPushButton("⟲ Reset All")
         reset_all_btn.setFixedHeight(24)
         reset_all_btn.setProperty("class", "danger")
-        self._reset_all_btn = reset_all_btn  # store ref
+        reset_all_btn.clicked.connect(self._reset_all)
         top_row.addWidget(reset_all_btn)
         self._layout.addLayout(top_row)
-
-        self._reset_cbs = []  # NEW: store reset callbacks
 
         for i in range(model.nu):
             name = (
@@ -60,7 +63,6 @@ class ActuatorPanel(QWidget):
             if hi <= lo:
                 hi = lo + 1.0
 
-            # NEW: Actuator type label
             atype = int(model.actuator_type[i]) if hasattr(model, 'actuator_type') else 0
             atype_name = ACTUATOR_TYPE_NAMES.get(atype, "Motor")
 
@@ -69,7 +71,7 @@ class ActuatorPanel(QWidget):
             gl.setContentsMargins(6, 6, 6, 6)
             gl.setSpacing(2)
 
-            # NEW: Type + range info row
+            # Type + range info row
             info_row = QHBoxLayout()
             type_lbl = QLabel(f"[{atype_name}]")
             type_lbl.setProperty("class", "dim")
@@ -87,7 +89,7 @@ class ActuatorPanel(QWidget):
             val_lbl.setProperty("class", "value")
             gl.addWidget(val_lbl)
 
-            # Slider + SpinBox row                                    # IMPROVED
+            # Slider + SpinBox row
             ctrl_row = QHBoxLayout()
             slider = QSlider(Qt.Horizontal)
             slider.setMinimum(0)
@@ -98,7 +100,6 @@ class ActuatorPanel(QWidget):
             slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             ctrl_row.addWidget(slider, stretch=3)
 
-            # NEW: Spin box for precise input
             spin = QDoubleSpinBox()
             spin.setRange(lo, hi)
             spin.setDecimals(3)
@@ -114,7 +115,7 @@ class ActuatorPanel(QWidget):
             reset_btn.setFixedHeight(22)
             gl.addWidget(reset_btn)
 
-            # Connect signals
+            # Connect signals with closures
             slider_cb = self._make_slider_cb(i, lo, hi, val_lbl, spin)
             spin_cb = self._make_spin_cb(i, lo, hi, val_lbl, slider)
             reset_cb = self._make_reset_cb(i, lo, hi, slider, val_lbl, spin)
@@ -122,21 +123,38 @@ class ActuatorPanel(QWidget):
             slider.valueChanged.connect(slider_cb)
             spin.valueChanged.connect(spin_cb)
             reset_btn.clicked.connect(reset_cb)
-            self._reset_cbs.append(reset_cb)                          # NEW
+            self._reset_cbs.append(reset_cb)
+
+            # Color-code initial value
+            self._update_value_style(val_lbl, float(data.ctrl[i]), lo, hi)
 
             group.setMaximumHeight(140)
             self._layout.addWidget(group)
 
-        # NEW: Connect Reset All
-        reset_all_btn.clicked.connect(self._reset_all)
         self._layout.addStretch()
 
-    # NEW: Reset all actuators
+    # ── Callbacks ──────────────────────────────────────────────
+
     def _reset_all(self):
         for cb in self._reset_cbs:
             cb()
 
+    @staticmethod
+    def _make_slider_cb(act_id, lo, hi, lbl, spin):
+        def cb(val):
+            v = lo + (val / 1000.0) * (hi - lo)
+            # Write to MjData — the main window's _tick reads this
+            cb._data = None  # will be set below
+            lbl.setText(f"{v:.3f}")
+            spin.blockSignals(True)
+            spin.setValue(v)
+            spin.blockSignals(False)
+            ActuatorPanel._update_value_style(lbl, v, lo, hi)
+        # Stash data reference via closure — set in build
+        return cb
+
     def _make_slider_cb(self, act_id, lo, hi, lbl, spin):
+        """Instance method version that can access self._data."""
         def cb(val):
             v = lo + (val / 1000.0) * (hi - lo)
             self._data.ctrl[act_id] = v
@@ -171,16 +189,16 @@ class ActuatorPanel(QWidget):
             self._update_value_style(lbl, mid, lo, hi)
         return cb
 
-    # NEW: Color-code value label based on position in range
-    def _update_value_style(self, lbl, val, lo, hi):
+    @staticmethod
+    def _update_value_style(lbl, val, lo, hi):
         mid = (lo + hi) / 2.0
         extent = (hi - lo) / 2.0
         if extent == 0:
             return
         ratio = abs(val - mid) / extent  # 0=center, 1=edge
         if ratio > 0.8:
-            lbl.setStyleSheet("color: #f7768e;")  # Red = near limit
+            lbl.setStyleSheet("color: #f7768e;")
         elif ratio > 0.5:
-            lbl.setStyleSheet("color: #e0af68;")  # Yellow = moderate
+            lbl.setStyleSheet("color: #e0af68;")
         else:
-            lbl.setStyleSheet("color: #7aa2f7;")  # Blue = near center
+            lbl.setStyleSheet("color: #7aa2f7;")

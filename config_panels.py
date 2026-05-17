@@ -3,10 +3,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QPushButton, QPlainTextEdit, QComboBox, QCheckBox,
-    QLineEdit, QSlider, QSplitter, QSpinBox, QListWidget,
-    QListWidgetItem, QInputDialog,
+    QLineEdit, QSpinBox, QInputDialog,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 import mujoco
 from constants import VIS_FLAGS, CAMERA_PRESETS, LABEL_MODES
 from viewport import MujocoViewport
@@ -14,6 +14,8 @@ from widgets import log
 
 
 class XMLEditor(QWidget):
+    """Live XML editor with find/replace, validation, and apply/revert."""
+
     apply_requested = Signal()
 
     def __init__(self, parent=None):
@@ -41,14 +43,12 @@ class XMLEditor(QWidget):
         btn_find_next.clicked.connect(self._find_next)
         fb_lay.addWidget(btn_find_next)
 
-        # NEW: Find previous
         btn_find_prev = QPushButton("▲")
         btn_find_prev.setFixedWidth(28)
         btn_find_prev.setToolTip("Find previous")
         btn_find_prev.clicked.connect(self._find_prev)
         fb_lay.addWidget(btn_find_prev)
 
-        # NEW: Match counter
         self._match_lbl = QLabel("")
         self._match_lbl.setProperty("class", "dim")
         self._match_lbl.setFixedWidth(60)
@@ -78,8 +78,6 @@ class XMLEditor(QWidget):
         self.editor = QPlainTextEdit()
         self.editor.setPlaceholderText("Load a model to view XML…")
         self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
-        # NEW: Monospace font
-        from PySide6.QtGui import QFont
         self.editor.setFont(QFont("Consolas", 11))
         layout.addWidget(self.editor)
 
@@ -106,7 +104,6 @@ class XMLEditor(QWidget):
         btn_row.addWidget(self.status_lbl)
         btn_row.addStretch()
 
-        # NEW: Line/char count
         self._cursor_lbl = QLabel("")
         self._cursor_lbl.setProperty("class", "dim")
         btn_row.addWidget(self._cursor_lbl)
@@ -125,34 +122,17 @@ class XMLEditor(QWidget):
         layout.addLayout(btn_row)
 
         self._saved_xml = ""
-
-        # NEW: Update cursor position on cursor change
         self.editor.cursorPositionChanged.connect(self._update_cursor_pos)
 
-    def _show_find_bar(self):                                         # NEW (renamed)
-        self._find_bar.setVisible(True)
-        self._find_input.setFocus()
-        self._find_input.selectAll()
+    # ── Public API ────────────────────────────────────────────
 
-    def _update_cursor_pos(self):                                      # NEW
-        cursor = self.editor.textCursor()
-        line = cursor.blockNumber() + 1
-        col = cursor.columnNumber() + 1
-        total_lines = self.editor.document().blockCount()
-        self._cursor_lbl.setText(f"Ln {line}:{col} / {total_lines}")
-
-    def set_xml(self, xml_string):
+    def set_xml(self, xml_string: str):
         self._saved_xml = xml_string
         self.editor.setPlainText(xml_string)
         self.status_lbl.setText("")
         self.status_lbl.setProperty("class", "dim")
 
-    def _revert(self):
-        self.editor.setPlainText(self._saved_xml)
-        self.status_lbl.setText("Reverted")
-        self.status_lbl.setProperty("class", "dim")
-
-    def set_validation(self, valid, message=""):
+    def set_validation(self, valid: bool, message: str = ""):
         if valid:
             self.status_lbl.setText(f"✓ {message}" if message else "✓ Valid")
             self.status_lbl.setProperty("class", "success")
@@ -162,33 +142,60 @@ class XMLEditor(QWidget):
         self.status_lbl.style().unpolish(self.status_lbl)
         self.status_lbl.style().polish(self.status_lbl)
 
+    # ── Find bar ──────────────────────────────────────────────
+
+    def _show_find_bar(self):
+        self._find_bar.setVisible(True)
+        self._find_input.setFocus()
+        self._find_input.selectAll()
+
+    def _update_cursor_pos(self):
+        cursor = self.editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        total_lines = self.editor.document().blockCount()
+        self._cursor_lbl.setText(f"Ln {line}:{col} / {total_lines}")
+
+    # ── Revert ────────────────────────────────────────────────
+
+    def _revert(self):
+        self.editor.setPlainText(self._saved_xml)
+        self.status_lbl.setText("Reverted")
+        self.status_lbl.setProperty("class", "dim")
+
+    # ── Find / Replace ────────────────────────────────────────
+
     def _find_next(self):
         text = self._find_input.text()
         if not text:
             return
         cursor = self.editor.document().find(text, self.editor.textCursor())
         if cursor.isNull():
-            # Wrap around
+            # Wrap around to the beginning
             cursor = self.editor.document().find(text)
         if not cursor.isNull():
             self.editor.setTextCursor(cursor)
         self._update_match_count(text)
 
-    def _find_prev(self):                                              # NEW
+    def _find_prev(self):
         text = self._find_input.text()
         if not text:
             return
-        cursor = self.editor.document().find(text, self.editor.textCursor(), 
-                                              self.editor.document().FindBackward)
+        cursor = self.editor.document().find(
+            text, self.editor.textCursor(),
+            self.editor.document().FindBackward,
+        )
         if cursor.isNull():
-            cursor = self.editor.document().find(text, 
-                                                  self.editor.document().end(),
-                                                  self.editor.document().FindBackward)
+            # Wrap around to the end
+            cursor = self.editor.document().find(
+                text, self.editor.document().end(),
+                self.editor.document().FindBackward,
+            )
         if not cursor.isNull():
             self.editor.setTextCursor(cursor)
         self._update_match_count(text)
 
-    def _update_match_count(self, text):                               # NEW
+    def _update_match_count(self, text):
         if not text:
             self._match_lbl.setText("")
             return
@@ -215,11 +222,17 @@ class XMLEditor(QWidget):
         self.status_lbl.setText(f"Replaced {count} occurrences")
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Render Options Panel
+# ═══════════════════════════════════════════════════════════════
+
 class RenderOptionsPanel(QWidget):
+    """Camera, overlay, trace, visualization, and rendering options."""
+
     def __init__(self, viewport: MujocoViewport, parent=None):
         super().__init__(parent)
         self.viewport = viewport
-        self._checkboxes = []
+        self._checkboxes: list = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
@@ -227,11 +240,13 @@ class RenderOptionsPanel(QWidget):
         # ── Camera ──
         cam_group = QGroupBox("Camera")
         cam_lay = QVBoxLayout(cam_group)
+
         self.cam_combo = QComboBox()
         self.cam_combo.addItem("Free Camera")
         self.cam_combo.currentIndexChanged.connect(self._on_camera_changed)
         cam_lay.addWidget(self.cam_combo)
 
+        # Camera preset
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
@@ -241,6 +256,7 @@ class RenderOptionsPanel(QWidget):
         preset_row.addWidget(self.preset_combo)
         cam_lay.addLayout(preset_row)
 
+        # Camera follow
         follow_row = QHBoxLayout()
         follow_row.addWidget(QLabel("Follow:"))
         self.follow_combo = QComboBox()
@@ -249,6 +265,7 @@ class RenderOptionsPanel(QWidget):
         follow_row.addWidget(self.follow_combo)
         cam_lay.addLayout(follow_row)
 
+        # Fit / Center buttons
         btn_row = QHBoxLayout()
         fit_btn = QPushButton("Fit to Scene")
         fit_btn.clicked.connect(self._fit_camera)
@@ -258,26 +275,30 @@ class RenderOptionsPanel(QWidget):
         btn_row.addWidget(center_btn)
         cam_lay.addLayout(btn_row)
 
-        # NEW: Camera bookmarks
+        # Camera bookmarks
         bm_row = QHBoxLayout()
         bm_row.addWidget(QLabel("Bookmark:"))
         self.bm_name_input = QLineEdit()
         self.bm_name_input.setPlaceholderText("name…")
         self.bm_name_input.setMaximumWidth(100)
         bm_row.addWidget(self.bm_name_input)
+
         save_bm_btn = QPushButton("💾")
         save_bm_btn.setToolTip("Save current camera as bookmark")
         save_bm_btn.setFixedWidth(28)
         save_bm_btn.clicked.connect(self._save_bookmark)
         bm_row.addWidget(save_bm_btn)
+
         self.bm_combo = QComboBox()
         self.bm_combo.setMaximumWidth(100)
         bm_row.addWidget(self.bm_combo)
+
         load_bm_btn = QPushButton("📂")
         load_bm_btn.setToolTip("Load selected bookmark")
         load_bm_btn.setFixedWidth(28)
         load_bm_btn.clicked.connect(self._load_bookmark)
         bm_row.addWidget(load_bm_btn)
+
         del_bm_btn = QPushButton("🗑")
         del_bm_btn.setToolTip("Delete selected bookmark")
         del_bm_btn.setFixedWidth(28)
@@ -290,37 +311,54 @@ class RenderOptionsPanel(QWidget):
         # ── Overlays ──
         overlay_group = QGroupBox("Overlays")
         overlay_lay = QVBoxLayout(overlay_group)
+
         self.fps_overlay_cb = QCheckBox("FPS Counter")
         self.fps_overlay_cb.setChecked(True)
-        self.fps_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_fps_overlay', v))
+        self.fps_overlay_cb.toggled.connect(
+            lambda v: setattr(self.viewport, '_show_fps_overlay', v)
+        )
         overlay_lay.addWidget(self.fps_overlay_cb)
+
         self.axis_overlay_cb = QCheckBox("Axis Indicator")
         self.axis_overlay_cb.setChecked(True)
-        self.axis_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_axis_overlay', v))
+        self.axis_overlay_cb.toggled.connect(
+            lambda v: setattr(self.viewport, '_show_axis_overlay', v)
+        )
         overlay_lay.addWidget(self.axis_overlay_cb)
+
         self.grid_overlay_cb = QCheckBox("Grid Overlay")
         self.grid_overlay_cb.setChecked(False)
-        self.grid_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_grid_overlay', v))
+        self.grid_overlay_cb.toggled.connect(
+            lambda v: setattr(self.viewport, '_show_grid_overlay', v)
+        )
         overlay_lay.addWidget(self.grid_overlay_cb)
+
         self.info_overlay_cb = QCheckBox("Selection Info")
         self.info_overlay_cb.setChecked(True)
-        self.info_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_info_overlay', v))
+        self.info_overlay_cb.toggled.connect(
+            lambda v: setattr(self.viewport, '_show_info_overlay', v)
+        )
         overlay_lay.addWidget(self.info_overlay_cb)
-        # NEW: Sim info overlay
+
         self.sim_info_overlay_cb = QCheckBox("Sim Time Info")
         self.sim_info_overlay_cb.setChecked(True)
-        self.sim_info_overlay_cb.toggled.connect(lambda v: setattr(self.viewport, '_show_sim_info', v))
+        self.sim_info_overlay_cb.toggled.connect(
+            lambda v: setattr(self.viewport, '_show_sim_info', v)
+        )
         overlay_lay.addWidget(self.sim_info_overlay_cb)
+
         layout.addWidget(overlay_group)
 
         # ── Traces ──
         trace_group = QGroupBox("Body Traces")
         trace_lay = QVBoxLayout(trace_group)
+
         self.trace_cb = QCheckBox("Show Traces")
         self.trace_cb.setChecked(False)
         self.trace_cb.toggled.connect(self._on_trace_toggled)
         trace_lay.addWidget(self.trace_cb)
-        # NEW: Trace settings
+
+        # Trace interval / max points
         trace_settings = QHBoxLayout()
         trace_settings.addWidget(QLabel("Interval:"))
         self.trace_interval_spin = QSpinBox()
@@ -331,6 +369,7 @@ class RenderOptionsPanel(QWidget):
             lambda v: setattr(self.viewport, '_trace_interval', v)
         )
         trace_settings.addWidget(self.trace_interval_spin)
+
         trace_settings.addWidget(QLabel("Max:"))
         self.trace_max_spin = QSpinBox()
         self.trace_max_spin.setRange(50, 2000)
@@ -342,12 +381,14 @@ class RenderOptionsPanel(QWidget):
         )
         trace_settings.addWidget(self.trace_max_spin)
         trace_lay.addLayout(trace_settings)
+
         clear_traces_btn = QPushButton("Clear Traces")
         clear_traces_btn.clicked.connect(self.viewport.clear_traces)
         trace_lay.addWidget(clear_traces_btn)
+
         layout.addWidget(trace_group)
 
-        # ── Visualization ──
+        # ── Visualization flags ──
         vis_group = QGroupBox("Visualization")
         vis_lay = QVBoxLayout(vis_group)
         for name, flag in VIS_FLAGS:
@@ -357,7 +398,7 @@ class RenderOptionsPanel(QWidget):
             vis_lay.addWidget(cb)
             self._checkboxes.append(cb)
 
-        # NEW: Label mode
+        # Label mode selector
         label_row = QHBoxLayout()
         label_row.addWidget(QLabel("Labels:"))
         self.label_combo = QComboBox()
@@ -379,16 +420,16 @@ class RenderOptionsPanel(QWidget):
             geom_lay.addWidget(cb, g // 3, g % 3)
         layout.addWidget(geom_group)
 
-        # ── Rendering ──
+        # ── Rendering quality / stereo ──
         trans_group = QGroupBox("Rendering")
         trans_lay = QVBoxLayout(trans_group)
+
         trans_lay.addWidget(QLabel("Stereo:"))
         self.scheme_combo = QComboBox()
         self.scheme_combo.addItems(["None", "Side-by-Side", "Quad Buffered"])
         self.scheme_combo.currentIndexChanged.connect(self._on_scheme_changed)
         trans_lay.addWidget(self.scheme_combo)
 
-        # NEW: Render quality
         quality_row = QHBoxLayout()
         quality_row.addWidget(QLabel("Quality:"))
         self.quality_combo = QComboBox()
@@ -402,7 +443,10 @@ class RenderOptionsPanel(QWidget):
 
         layout.addStretch()
 
+    # ── Camera population (called on model load) ──────────────
+
     def populate_cameras(self, model):
+        """Rebuild camera and follow-body combo boxes from the model."""
         self.cam_combo.blockSignals(True)
         self.cam_combo.clear()
         self.cam_combo.addItem("Free Camera")
@@ -427,6 +471,8 @@ class RenderOptionsPanel(QWidget):
                 self.follow_combo.addItem(name)
         self.follow_combo.blockSignals(False)
         self.follow_combo.setCurrentIndex(0)
+
+    # ── Camera callbacks ──────────────────────────────────────
 
     def _on_camera_changed(self, idx):
         if idx <= 0:
@@ -458,7 +504,8 @@ class RenderOptionsPanel(QWidget):
             self.viewport.cam.lookat = self.viewport.model.stat.center.copy()
             self.viewport.render()
 
-    # NEW: Camera bookmark actions
+    # ── Camera bookmark actions ───────────────────────────────
+
     def _save_bookmark(self):
         name = self.bm_name_input.text().strip()
         if not name:
@@ -485,12 +532,16 @@ class RenderOptionsPanel(QWidget):
         for name in self.viewport.get_camera_bookmarks():
             self.bm_combo.addItem(name)
 
+    # ── Trace callback ────────────────────────────────────────
+
     def _on_trace_toggled(self, checked):
         self.viewport._show_traces = checked
         if not checked:
             self.viewport._traces = {}
             self.viewport._trace_counter = 0
         self.viewport.render()
+
+    # ── Stereo / label / quality callbacks ────────────────────
 
     def _on_scheme_changed(self, idx):
         if self.viewport.renderer is None:
@@ -504,7 +555,6 @@ class RenderOptionsPanel(QWidget):
             pass
         self.viewport.render()
 
-    # NEW: Label mode changed
     def _on_label_changed(self, idx):
         if 0 <= idx < len(LABEL_MODES):
             _, val = LABEL_MODES[idx]
@@ -512,17 +562,16 @@ class RenderOptionsPanel(QWidget):
             self.viewport.render()
 
     def _on_quality_changed(self, idx):
-        # Quality affects rendering — simple approximation via shadow flag
         try:
             if idx == 0:  # Low — disable shadows
                 self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = False
-            elif idx == 1:  # Medium — default
-                self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = True
-            elif idx == 2:  # High — enable shadows
+            else:  # Medium / High — enable shadows
                 self.viewport.vopt.flags[mujoco.mjtVisFlag.mjVIS_SHADOW] = True
         except Exception:
             pass
         self.viewport.render()
+
+    # ── Visualization flag / geom group closures ──────────────
 
     def _make_flag_cb(self, flag):
         def cb(checked):
@@ -532,6 +581,7 @@ class RenderOptionsPanel(QWidget):
 
     def _make_geom_cb(self, group):
         def cb(checked):
+            
             self.viewport.vopt.geomgroup[group] = checked
             self.viewport.render()
         return cb

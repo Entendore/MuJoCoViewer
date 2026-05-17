@@ -1,6 +1,11 @@
 """
 Standalone pytest suite for MuJoCo Viewer.
+
 Run:  pytest test_mujoco_viewer.py -v
+
+Tests are split into:
+  1. Pure MuJoCo model / physics tests (no GUI required)
+  2. GUI integration tests (require a display or xvfb)
 """
 
 import numpy as np
@@ -11,6 +16,7 @@ from constants import EXAMPLES, ACTUATOR_TYPE_NAMES
 # ═══════════════════════════════════════════════════════════════
 # Pure MuJoCo model / physics tests (no GUI)
 # ═══════════════════════════════════════════════════════════════
+
 
 def test_all_examples_load():
     """Every built-in example XML must compile to a valid MjModel."""
@@ -126,6 +132,24 @@ def test_model_actuator_type_uses_known_integers():
             )
 
 
+def test_camera_presets_valid():
+    """Camera presets are well-formed tuples."""
+    from constants import CAMERA_PRESETS
+    for name, az, el in CAMERA_PRESETS:
+        assert isinstance(name, str)
+        assert isinstance(az, (int, float))
+        assert isinstance(el, (int, float))
+
+
+def test_label_modes_valid():
+    """Label modes have correct structure."""
+    from constants import LABEL_MODES
+    for name, val in LABEL_MODES:
+        assert isinstance(name, str)
+        assert isinstance(val, int)
+        assert 0 <= val <= 7
+
+
 # ═══════════════════════════════════════════════════════════════
 # GUI integration tests (requires display / xvfb)
 # ═══════════════════════════════════════════════════════════════
@@ -170,11 +194,13 @@ def test_gui_panel_counts(main_window):
 
 def test_gui_body_tree_count(main_window):
     tree = main_window.body_panel.tree
+
     def count(parent):
         n = 0
         for i in range(parent.childCount()):
             n += 1 + count(parent.child(i))
         return n
+
     assert count(tree.invisibleRootItem()) == main_window.model.nbody
 
 
@@ -213,3 +239,14 @@ def test_gui_actuator_reset_all(main_window):
         cr = mw.model.actuator_ctrlrange[i]
         expected = (cr[0] + cr[1]) / 2.0
         assert abs(mw.data.ctrl[i] - expected) < 1e-6
+
+
+def test_gui_status_bar_visible(main_window):
+    """Status bar labels are non-empty after model load."""
+    assert main_window.status_time.text() != ""
+    assert main_window.status_info.text() != ""
+
+
+def test_gui_speed_combo_indices(main_window):
+    """Speed combo has 8 entries matching the speeds list."""
+    assert main_window.speed_combo.count() == 8

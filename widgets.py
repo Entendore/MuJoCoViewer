@@ -32,7 +32,9 @@ def setup_logger(name="mujoco_viewer"):
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    )
     console = logging.StreamHandler()
     console.setLevel(logging.DEBUG)
     console.setFormatter(fmt)
@@ -49,46 +51,50 @@ log, log_emitter = setup_logger()
 
 # ── Toast with queuing support ────────────────────────────────
 class ToastLabel(QLabel):
+    """Non-blocking toast notification with queue and style variants."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self._default_style = (
-            "background-color: rgba(61,89,161,210); color:#fff; "
-            "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
-        )
-        self._error_style = (
-            "background-color: rgba(247,118,142,210); color:#fff; "
-            "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
-        )
-        self._success_style = (
-            "background-color: rgba(158,206,106,200); color:#1a1b26; "
-            "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
-        )
-        self._warning_style = (
-            "background-color: rgba(224,175,104,210); color:#1a1b26; "
-            "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
-        )
-        self.setStyleSheet(self._default_style)
+        self._styles = {
+            "default": (
+                "background-color: rgba(61,89,161,210); color:#fff; "
+                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+            ),
+            "error": (
+                "background-color: rgba(247,118,142,210); color:#fff; "
+                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+            ),
+            "success": (
+                "background-color: rgba(158,206,106,200); color:#1a1b26; "
+                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+            ),
+            "warning": (
+                "background-color: rgba(224,175,104,210); color:#1a1b26; "
+                "border-radius:8px; padding:8px 20px; font-weight:bold; font-size:13px;"
+            ),
+        }
+        self.setStyleSheet(self._styles["default"])
         self.hide()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._on_timeout)
-        self._queue = deque()
+        self._timer.timeout.connect(self._show_next)
+        self._queue: deque = deque()
 
     def show_message(self, text, duration=2500):
-        self._enqueue(text, self._default_style, duration)
+        self._enqueue(text, "default", duration)
 
     def show_error(self, text, duration=4000):
-        self._enqueue(text, self._error_style, duration)
+        self._enqueue(text, "error", duration)
 
     def show_success(self, text, duration=2500):
-        self._enqueue(text, self._success_style, duration)
+        self._enqueue(text, "success", duration)
 
     def show_warning(self, text, duration=3000):
-        self._enqueue(text, self._warning_style, duration)
+        self._enqueue(text, "warning", duration)
 
-    def _enqueue(self, text, style, duration):
-        self._queue.append((text, style, duration))
+    def _enqueue(self, text, style_key, duration):
+        self._queue.append((text, self._styles[style_key], duration))
         if not self._timer.isActive():
             self._show_next()
 
@@ -98,12 +104,6 @@ class ToastLabel(QLabel):
             return
         text, style, duration = self._queue.popleft()
         self.setStyleSheet(style)
-        self._show(text, duration)
-
-    def _on_timeout(self):
-        self._show_next()
-
-    def _show(self, text, duration):
         self.setText(text)
         self.adjustSize()
         if self.parentWidget():
@@ -116,6 +116,8 @@ class ToastLabel(QLabel):
 
 # ── Log Panel with filter and search ──────────────────────────
 class LogPanel(QWidget):
+    """Scrolling log viewer with level filter, text search, and copy."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -140,7 +142,6 @@ class LogPanel(QWidget):
         self.auto_scroll_cb = QCheckBox("Auto-scroll")
         self.auto_scroll_cb.setChecked(True)
         filter_row.addWidget(self.auto_scroll_cb)
-
         filter_row.addStretch()
 
         copy_btn = QPushButton("📋 Copy")
@@ -164,24 +165,17 @@ class LogPanel(QWidget):
             "border: 1px solid #24283b; border-radius: 4px; }"
         )
         layout.addWidget(self.log_view)
-        self._all_messages = []
+        self._all_messages: list[tuple[str, str]] = []
 
     def append_log(self, message: str):
-        escaped = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        if "[ERROR]" in message:
-            color = "#f7768e"
-        elif "[WARNING]" in message:
-            color = "#e0af68"
-        elif "[INFO]" in message:
-            color = "#9ece6a"
-        elif "[DEBUG]" in message:
-            color = "#565f89"
-        else:
-            color = "#a9b1d6"
-
+        color = "#a9b1d6"
+        for tag, c in [("[ERROR]", "#f7768e"), ("[WARNING]", "#e0af68"),
+                        ("[INFO]", "#9ece6a"), ("[DEBUG]", "#565f89")]:
+            if tag in message:
+                color = c
+                break
         self._all_messages.append((message, color))
         self._apply_filter()
-
         if self.auto_scroll_cb.isChecked():
             sb = self.log_view.verticalScrollBar()
             sb.setValue(sb.maximum())
@@ -192,13 +186,8 @@ class LogPanel(QWidget):
         self.log_view.clear()
         for msg, color in self._all_messages:
             if level != "all":
-                if level == "info" and "[INFO]" not in msg:
-                    continue
-                elif level == "warning" and "[WARNING]" not in msg:
-                    continue
-                elif level == "error" and "[ERROR]" not in msg:
-                    continue
-                elif level == "debug" and "[DEBUG]" not in msg:
+                level_tag = f"[{level.upper()}]"
+                if level_tag not in msg:
                     continue
             if search and search not in msg.lower():
                 continue
@@ -218,11 +207,13 @@ class LogPanel(QWidget):
 
 # ── FPS / RTF Graph Widget ────────────────────────────────────
 class FPSGraph(QWidget):
+    """Real-time FPS and RTF (real-time factor) sparkline graph."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(60)
-        self._fps_history = deque(maxlen=120)
-        self._rtf_history = deque(maxlen=120)
+        self._fps_history: deque = deque(maxlen=120)
+        self._rtf_history: deque = deque(maxlen=120)
         self.setMinimumWidth(200)
 
     def add_fps(self, fps, rtf=1.0):
@@ -263,10 +254,9 @@ class FPSGraph(QWidget):
                 painter.drawLine(points[i][0], points[i][1],
                                  points[i + 1][0], points[i + 1][1])
 
-            # RTF line
+            # RTF line (scaled to half height)
             if len(self._rtf_history) >= 2:
                 max_rtf = max(max(self._rtf_history), 1.5)
-                # FIX: Use QColor(r, g, b, a) instead of QColor(hex, alpha)
                 painter.setPen(QPen(QColor(224, 175, 104, 120), 1, Qt.DashLine))
                 rtf_points = []
                 for i, rtf in enumerate(self._rtf_history):
@@ -290,6 +280,8 @@ class FPSGraph(QWidget):
 
 # ── Shortcuts Dialog ──────────────────────────────────────────
 class ShortcutsDialog(QDialog):
+    """Modal dialog showing all keyboard shortcuts."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard Shortcuts")
@@ -335,7 +327,7 @@ class ShortcutsDialog(QDialog):
         <h3>File</h3>
         <table>
         <tr><td class="key">Ctrl+O</td><td class="desc">Open model file</td></tr>
-        <tr><td class="key">Ctrl+S</td><td class="desc">Save screenshot</td></tr>
+        <tr><td class="key">Ctrl+Shift+S</td><td class="desc">Save screenshot</td></tr>
         </table>
         """)
         layout.addWidget(info)

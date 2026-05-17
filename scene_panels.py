@@ -6,13 +6,17 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QGroupBox,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QHeaderView, QPushButton, QComboBox, QSpinBox, QLineEdit,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QMessageBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPainter, QColor, QPen
 import mujoco
 from widgets import log
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Body Tree Panel
+# ═══════════════════════════════════════════════════════════════
 
 class BodyTreePanel(QWidget):
     focus_body = Signal(int)
@@ -22,7 +26,7 @@ class BodyTreePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # NEW: Search filter
+        # Search filter
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Filter bodies…")
@@ -31,16 +35,7 @@ class BodyTreePanel(QWidget):
         search_row.addWidget(self.search_input)
         layout.addLayout(search_row)
 
-        # Create the tree FIRST so we can reference it
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setColumnWidth(0, 160)
-        self.tree.itemDoubleClicked.connect(self._on_double_click)
-        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._on_context_menu)
-
-        # Now the filter row can safely reference self.tree
+        # Filter combo + expand/collapse
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter:"))
         self.filter_combo = QComboBox()
@@ -50,17 +45,25 @@ class BodyTreePanel(QWidget):
         filter_row.addWidget(self.filter_combo)
         filter_row.addStretch()
         expand_btn = QPushButton("Expand All")
-        expand_btn.clicked.connect(self.tree.expandAll)
+        expand_btn.clicked.connect(lambda: self.tree.expandAll())
         filter_row.addWidget(expand_btn)
         collapse_btn = QPushButton("Collapse")
-        collapse_btn.clicked.connect(self.tree.collapseAll)
+        collapse_btn.clicked.connect(lambda: self.tree.collapseAll())
         filter_row.addWidget(collapse_btn)
         layout.addLayout(filter_row)
 
+        # Tree
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setColumnWidth(0, 160)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.tree)
 
         self._model = None
-        self._all_items = {}
+        self._all_items: dict = {}
 
     def build(self, model):
         self._model = model
@@ -68,7 +71,7 @@ class BodyTreePanel(QWidget):
         self._all_items = {}
         if model is None:
             return
-        items = {}
+        items: dict[int, QTreeWidgetItem] = {}
         for i in range(model.nbody):
             name = (
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
@@ -102,18 +105,14 @@ class BodyTreePanel(QWidget):
         filter_mode = self.filter_combo.currentText()
         for body_id, (name, njnt, ngeom, item) in self._all_items.items():
             hidden = False
-            # Text search filter
             if search and search not in name.lower():
                 hidden = True
-            # Combo filter
             if filter_mode == "Joints" and njnt == 0:
                 hidden = True
             elif filter_mode == "No Children":
-                # Check if this body has any children
                 has_child = any(
-                    bid == body_id
+                    self._model.body_parentid[bid] == body_id
                     for bid in range(self._model.nbody)
-                    if self._model.body_parentid[bid] == body_id
                 ) if self._model else False
                 if has_child:
                     hidden = True
@@ -133,11 +132,17 @@ class BodyTreePanel(QWidget):
             self.focus_body.emit(body_id)
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Watch Panel
+# ═══════════════════════════════════════════════════════════════
+
 class WatchPanel(QWidget):
+    """User-configurable variable watcher (qpos, qvel, ctrl, act, sensordata)."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model, self._data = None, None
-        self._watches = []
+        self._watches: list[tuple[str, int, str]] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -147,22 +152,18 @@ class WatchPanel(QWidget):
         self.cat_combo = QComboBox()
         self.cat_combo.addItems(["qpos", "qvel", "ctrl", "act", "sensordata"])
         add_row.addWidget(self.cat_combo)
-
         add_row.addWidget(QLabel("Idx:"))
         self.idx_spin = QSpinBox()
         self.idx_spin.setRange(0, 9999)
         self.idx_spin.setValue(0)
         self.idx_spin.setFixedWidth(60)
         add_row.addWidget(self.idx_spin)
-
         add_btn = QPushButton("+ Add")
         add_btn.clicked.connect(self._add_watch)
         add_row.addWidget(add_btn)
-
         clear_btn = QPushButton("Clear All")
         clear_btn.clicked.connect(self._clear_watches)
         add_row.addWidget(clear_btn)
-
         layout.addLayout(add_row)
 
         # Quick-add presets
@@ -188,7 +189,6 @@ class WatchPanel(QWidget):
         self.watch_table.setAlternatingRowColors(True)
         self.watch_table.verticalHeader().setVisible(False)
         layout.addWidget(self.watch_table)
-
         layout.addStretch()
 
     def build(self, model, data):
@@ -197,9 +197,8 @@ class WatchPanel(QWidget):
     def _add_watch(self):
         cat = self.cat_combo.currentText()
         idx = self.idx_spin.value()
-        for w_cat, w_idx, _ in self._watches:
-            if w_cat == cat and w_idx == idx:
-                return
+        if any(w[0] == cat and w[1] == idx for w in self._watches):
+            return
         label = f"{cat}[{idx}]"
         self._watches.append((cat, idx, label))
         self._rebuild_table()
@@ -208,8 +207,7 @@ class WatchPanel(QWidget):
         if self._data is None:
             return
         for i in range(len(self._data.qpos)):
-            exists = any(w[0] == "qpos" and w[1] == i for w in self._watches)
-            if not exists:
+            if not any(w[0] == "qpos" and w[1] == i for w in self._watches):
                 self._watches.append(("qpos", i, f"qpos[{i}]"))
         self._rebuild_table()
 
@@ -217,8 +215,7 @@ class WatchPanel(QWidget):
         if self._data is None:
             return
         for i in range(len(self._data.ctrl)):
-            exists = any(w[0] == "ctrl" and w[1] == i for w in self._watches)
-            if not exists:
+            if not any(w[0] == "ctrl" and w[1] == i for w in self._watches):
                 self._watches.append(("ctrl", i, f"ctrl[{i}]"))
         self._rebuild_table()
 
@@ -256,7 +253,29 @@ class WatchPanel(QWidget):
                 pass
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Sensor Panel
+# ═══════════════════════════════════════════════════════════════
+
 class SensorPanel(QWidget):
+    _SENSOR_TYPE_NAMES = {
+        0: "None", 1: "Magnetometer", 2: "Gyro", 3: "Accelerometer",
+        4: "Velocimeter", 5: "GyroF", 6: "AccelerometerF",
+        7: "VelocimeterF", 8: "Force", 9: "Torque", 10: "ForceF",
+        11: "TorqueF", 12: "JointPos", 13: "JointVel",
+        14: "TendonPos", 15: "TendonVel", 16: "ActuatorPos",
+        17: "ActuatorVel", 18: "ActuatorFrc",
+        19: "BallJointAng", 20: "BallJointVel",
+        21: "JointLimitPos", 22: "JointLimitVel",
+        23: "TendonLimitPos", 24: "TendonLimitVel",
+        25: "FramePos", 26: "FrameQuat", 27: "FrameXaxis",
+        28: "FrameYaxis", 29: "FrameZaxis",
+        30: "FrameLinVel", 31: "FrameAngVel",
+        32: "FrameLinAcc", 33: "FrameAngAcc",
+        34: "SubtreeCom", 35: "SubtreeLinVel", 36: "SubtreeAngMom",
+        100: "User",
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -272,44 +291,25 @@ class SensorPanel(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
-
         self._nsensor = 0
-        self._sensor_adr = []
-        self._sensor_dim = []
+        self._sensor_adr: list[int] = []
+        self._sensor_dim: list[int] = []
 
     def build(self, model, data):
         if model is None:
             self.table.setRowCount(0)
             return
-        nsensor = model.nsensor
-        self._nsensor = nsensor
+        self._nsensor = model.nsensor
         self._sensor_adr = []
         self._sensor_dim = []
-        self.table.setRowCount(nsensor)
-        for i in range(nsensor):
+        self.table.setRowCount(self._nsensor)
+        for i in range(self._nsensor):
             name = (
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SENSOR, i)
                 or f"sensor_{i}"
             )
             stype = int(model.sensor_type[i])
-            type_names = {
-                0: "None", 1: "Magnetometer", 2: "Gyro", 3: "Accelerometer",
-                4: "Velocimeter", 5: "GyroF", 6: "AccelerometerF",
-                7: "VelocimeterF", 8: "Force", 9: "Torque", 10: "ForceF",
-                11: "TorqueF", 12: "JointPos", 13: "JointVel",
-                14: "TendonPos", 15: "TendonVel", 16: "ActuatorPos",
-                17: "ActuatorVel", 18: "ActuatorFrc",
-                19: "BallJointAng", 20: "BallJointVel",
-                21: "JointLimitPos", 22: "JointLimitVel",
-                23: "TendonLimitPos", 24: "TendonLimitVel",
-                25: "FramePos", 26: "FrameQuat", 27: "FrameXaxis",
-                28: "FrameYaxis", 29: "FrameZaxis",
-                30: "FrameLinVel", 31: "FrameAngVel",
-                32: "FrameLinAcc", 33: "FrameAngAcc",
-                34: "SubtreeCom", 35: "SubtreeLinVel", 36: "SubtreeAngMom",
-                100: "User",
-            }
-            type_name = type_names.get(stype, f"type_{stype}")
+            type_name = self._SENSOR_TYPE_NAMES.get(stype, f"type_{stype}")
             dim = int(model.sensor_dim[i])
             self._sensor_adr.append(int(model.sensor_adr[i]))
             self._sensor_dim.append(dim)
@@ -337,6 +337,10 @@ class SensorPanel(QWidget):
             except Exception:
                 pass
 
+
+# ═══════════════════════════════════════════════════════════════
+#  Energy Panel
+# ═══════════════════════════════════════════════════════════════
 
 class EnergyPanel(QWidget):
     def __init__(self, parent=None):
@@ -381,10 +385,8 @@ class EnergyPanel(QWidget):
         layout.addWidget(gp)
         layout.addWidget(gt)
 
-        # Energy history graph
         self._history_graph = EnergyHistoryGraph()
         layout.addWidget(self._history_graph)
-
         layout.addStretch()
 
     def refresh(self, model, data):
@@ -414,12 +416,14 @@ class EnergyPanel(QWidget):
 
 
 class EnergyHistoryGraph(QWidget):
+    """Sparkline graph of kinetic, potential, and total energy over time."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(80)
-        self._ke = deque(maxlen=200)
-        self._pe = deque(maxlen=200)
-        self._total = deque(maxlen=200)
+        self._ke: deque = deque(maxlen=200)
+        self._pe: deque = deque(maxlen=200)
+        self._total: deque = deque(maxlen=200)
 
     def add_data(self, ke, pe, total):
         self._ke.append(ke)
@@ -429,45 +433,51 @@ class EnergyHistoryGraph(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#16161e"))
-        painter.setPen(QPen(QColor("#24283b"), 1))
-        painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        try:
+            painter.fillRect(self.rect(), QColor("#16161e"))
+            painter.setPen(QPen(QColor("#24283b"), 1))
+            painter.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
-        if len(self._total) < 2:
-            painter.setPen(QColor("#565f89"))
-            painter.setFont(QFont("Consolas", 8))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Energy history")
+            if len(self._total) < 2:
+                painter.setPen(QColor("#565f89"))
+                painter.setFont(QFont("Consolas", 8))
+                painter.drawText(self.rect(), Qt.AlignCenter, "Energy history")
+                return
+
+            w, h = self.width(), self.height()
+            all_vals = list(self._ke) + list(self._pe) + list(self._total)
+            min_v, max_v = min(all_vals), max(all_vals)
+            span = max_v - min_v if max_v != min_v else 1.0
+
+            for data, color in [
+                (self._ke, "#f7768e"),
+                (self._pe, "#7aa2f7"),
+                (self._total, "#9ece6a"),
+            ]:
+                painter.setPen(QPen(QColor(color), 1.2))
+                n = len(data)
+                dx = w / max(n - 1, 1)
+                points = [
+                    (int(i * dx), h - int(((v - min_v) / span) * (h - 8)) - 4)
+                    for i, v in enumerate(data)
+                ]
+                for i in range(len(points) - 1):
+                    painter.drawLine(points[i][0], points[i][1],
+                                     points[i + 1][0], points[i + 1][1])
+
+            painter.setFont(QFont("Consolas", 7))
+            for x, label, color in [(4, "KE", "#f7768e"),
+                                     (24, "PE", "#7aa2f7"),
+                                     (44, "Tot", "#9ece6a")]:
+                painter.setPen(QColor(color))
+                painter.drawText(x, 10, label)
+        finally:
             painter.end()
-            return
 
-        w, h = self.width(), self.height()
-        all_vals = list(self._ke) + list(self._pe) + list(self._total)
-        min_v = min(all_vals)
-        max_v = max(all_vals)
-        span = max_v - min_v if max_v != min_v else 1.0
 
-        for data, color in [(self._ke, "#f7768e"), (self._pe, "#7aa2f7"), (self._total, "#9ece6a")]:
-            painter.setPen(QPen(QColor(color), 1.2))
-            n = len(data)
-            dx = w / max(n - 1, 1)
-            points = []
-            for i, v in enumerate(data):
-                x = int(i * dx)
-                y = h - int(((v - min_v) / span) * (h - 8)) - 4
-                points.append((x, y))
-            for i in range(len(points) - 1):
-                painter.drawLine(points[i][0], points[i][1],
-                                 points[i + 1][0], points[i + 1][1])
-
-        painter.setFont(QFont("Consolas", 7))
-        painter.setPen(QColor("#f7768e"))
-        painter.drawText(4, 10, "KE")
-        painter.setPen(QColor("#7aa2f7"))
-        painter.drawText(24, 10, "PE")
-        painter.setPen(QColor("#9ece6a"))
-        painter.drawText(44, 10, "Total")
-        painter.end()
-
+# ═══════════════════════════════════════════════════════════════
+#  Contacts Panel
+# ═══════════════════════════════════════════════════════════════
 
 class ContactsPanel(QWidget):
     def __init__(self, parent=None):
@@ -486,7 +496,7 @@ class ContactsPanel(QWidget):
         header_row.addWidget(self.auto_refresh_cb)
         refresh_btn = QPushButton("🔄 Refresh")
         refresh_btn.setFixedWidth(80)
-        refresh_btn.clicked.connect(lambda: self._force_refresh())
+        refresh_btn.clicked.connect(lambda: setattr(self, '_force_refresh_flag', True))
         header_row.addWidget(refresh_btn)
         layout.addLayout(header_row)
 
@@ -501,9 +511,6 @@ class ContactsPanel(QWidget):
 
         self._refresh_counter = 0
         self._force_refresh_flag = False
-
-    def _force_refresh(self):
-        self._force_refresh_flag = True
 
     def refresh(self, model, data):
         if model is None or data is None:
@@ -533,6 +540,7 @@ class ContactsPanel(QWidget):
             )
             self.table.setItem(i, 0, QTableWidgetItem(g1_name))
             self.table.setItem(i, 1, QTableWidgetItem(g2_name))
+
             dist_item = QTableWidgetItem(f"{c.dist:.5f}")
             if c.dist < 0:
                 dist_item.setForeground(QColor("#f7768e"))
@@ -541,6 +549,7 @@ class ContactsPanel(QWidget):
             else:
                 dist_item.setForeground(QColor("#9ece6a"))
             self.table.setItem(i, 2, dist_item)
+
             try:
                 force = np.zeros(6)
                 mujoco.mj_contactForce(model, data, i, force)
@@ -560,14 +569,19 @@ class ContactsPanel(QWidget):
                 self.table.setItem(i, 4, QTableWidgetItem("—"))
 
 
+# ═══════════════════════════════════════════════════════════════
+#  Keyframe Panel
+# ═══════════════════════════════════════════════════════════════
+
 class KeyframePanel(QWidget):
     """Save and restore simulation keyframes (qpos, qvel, ctrl)."""
+
     load_keyframe = Signal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model, self._data = None, None
-        self._keyframes = {}
+        self._keyframes: dict[str, dict] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -599,7 +613,6 @@ class KeyframePanel(QWidget):
         clear_btn.clicked.connect(self._clear_all)
         action_row.addWidget(clear_btn)
         layout.addLayout(action_row)
-
         layout.addStretch()
 
     def build(self, model, data):
@@ -617,7 +630,6 @@ class KeyframePanel(QWidget):
         if not name:
             name = f"KF_{len(self._keyframes) + 1}"
         if name in self._keyframes:
-            from PySide6.QtWidgets import QMessageBox
             reply = QMessageBox.question(
                 self, "Overwrite?", f"Keyframe '{name}' exists. Overwrite?",
                 QMessageBox.Yes | QMessageBox.No,
@@ -638,7 +650,7 @@ class KeyframePanel(QWidget):
     def _on_load(self, item):
         if item is None or self._data is None:
             return
-        name = item.text().split("  ")[0]  # strip the time suffix
+        name = item.text().split("  ")[0]
         if name not in self._keyframes:
             return
         kf = self._keyframes[name]
@@ -670,5 +682,4 @@ class KeyframePanel(QWidget):
     def _rebuild_list(self):
         self.kf_list.clear()
         for name, kf in self._keyframes.items():
-            item = QListWidgetItem(f"{name}  (t={kf['time']:.2f}s)")
-            self.kf_list.addItem(item)
+            self.kf_list.addItem(f"{name}  (t={kf['time']:.2f}s)")
