@@ -1,0 +1,27 @@
+
+<mujoco model="cartpole">
+  <option gravity="0 0 -9.81" timestep="0.01"/>
+  <worldbody>
+    <light pos="0 0 5"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.3 0.3 0.3 1"/>
+    <body name="cart" pos="0 0 0.2">
+      <joint name="slider" type="slide" axis="1 0 0" range="-3 3"/>
+      <geom type="box" size="0.2 0.15 0.1" rgba="0.8 0.8 0.2 1" mass="1"/>
+      <body name="pole" pos="0 0 0.15">
+        <joint name="hinge" type="hinge" axis="0 1 0" damping="0.01"/>
+        <geom type="capsule" fromto="0 0 0 0 0 1" size="0.04" rgba="0.2 0.8 0.2 1" mass="0.5"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="force" joint="slider" ctrlrange="-100 100" ctrllimited="true"/>
+  </actuator>
+  <sensor>
+    <jointpos name="slider_pos" joint="slider"/>
+    <jointvel name="slider_vel" joint="slider"/>
+    <jointpos name="hinge_pos" joint="hinge"/>
+    <jointvel name="hinge_vel" joint="hinge"/>
+    <actuatorfrc name="force_applied" actuator="force"/>
+    <framepos name="pole_tip_pos" objtype="body" objname="pole"/>
+  </sensor>
+</mujoco>

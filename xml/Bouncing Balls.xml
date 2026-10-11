@@ -1,0 +1,51 @@
+
+<mujoco model="bouncing_balls">
+  <option gravity="0 0 -9.81" timestep="0.005"/>
+  <default>
+    <geom friction="0.6 0.02 0.02" condim="3"/>
+  </default>
+  <worldbody>
+    <light pos="0 0 8" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.22 0.22 0.28 1"/>
+    <!-- Walls -->
+    <geom name="wall_x1" type="plane" size="0.01 5 5" pos="1.5 0 2.5"
+          rgba="0.3 0.3 0.35 0.3" euler="0 90 0"/>
+    <geom name="wall_x2" type="plane" size="0.01 5 5" pos="-1.5 0 2.5"
+          rgba="0.3 0.3 0.35 0.3" euler="0 -90 0"/>
+    <geom name="wall_y1" type="plane" size="5 0.01 5" pos="0 1.5 2.5"
+          rgba="0.3 0.3 0.35 0.3" euler="-90 0 0"/>
+    <geom name="wall_y2" type="plane" size="5 0.01 5" pos="0 -1.5 2.5"
+          rgba="0.3 0.3 0.35 0.3" euler="90 0 0"/>
+
+    <body name="ball_red" pos="0 0 3">
+      <freejoint/>
+      <geom type="sphere" size="0.18" rgba="0.9 0.2 0.2 1" mass="1"/>
+    </body>
+    <body name="ball_green" pos="0.4 0 3.8">
+      <freejoint/>
+      <geom type="sphere" size="0.14" rgba="0.2 0.75 0.3 1" mass="0.5"/>
+    </body>
+    <body name="ball_blue" pos="-0.3 0.3 4.5">
+      <freejoint/>
+      <geom type="sphere" size="0.22" rgba="0.2 0.35 0.9 1" mass="1.5"/>
+    </body>
+    <body name="ball_yellow" pos="0.6 -0.2 2.5">
+      <freejoint/>
+      <geom type="sphere" size="0.11" rgba="0.9 0.85 0.15 1" mass="0.3"/>
+    </body>
+    <body name="ball_purple" pos="-0.5 0.4 5">
+      <freejoint/>
+      <geom type="sphere" size="0.16" rgba="0.75 0.2 0.8 1" mass="0.7"/>
+    </body>
+    <body name="ball_orange" pos="0.2 -0.5 3.3">
+      <freejoint/>
+      <geom type="sphere" size="0.2" rgba="0.95 0.55 0.15 1" mass="1.2"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framepos name="ball_red_pos" objtype="body" objname="ball_red"/>
+    <framepos name="ball_blue_pos" objtype="body" objname="ball_blue"/>
+    <framelinvel name="ball_red_vel" objtype="body" objname="ball_red"/>
+    <framelinvel name="ball_blue_vel" objtype="body" objname="ball_blue"/>
+  </sensor>
+</mujoco>

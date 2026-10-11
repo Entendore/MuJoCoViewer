@@ -1,0 +1,53 @@
+
+<mujoco model="stacking_blocks">
+  <option gravity="0 0 -9.81" timestep="0.005"/>
+  <default>
+    <geom friction="1.0 0.02 0.02" condim="3"/>
+  </default>
+  <worldbody>
+    <light pos="0 0 5" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.22 0.22 0.28 1"/>
+    <!-- Table surface -->
+    <geom name="table" type="box" pos="0 0 0.35" size="0.5 0.35 0.02"
+          rgba="0.45 0.35 0.25 1"/>
+    <geom name="table_leg1" type="cylinder" pos="0.4 0.25 0.175"
+          size="0.02 0.175" rgba="0.4 0.3 0.2 1"/>
+    <geom name="table_leg2" type="cylinder" pos="-0.4 0.25 0.175"
+          size="0.02 0.175" rgba="0.4 0.3 0.2 1"/>
+    <geom name="table_leg3" type="cylinder" pos="0.4 -0.25 0.175"
+          size="0.02 0.175" rgba="0.4 0.3 0.2 1"/>
+    <geom name="table_leg4" type="cylinder" pos="-0.4 -0.25 0.175"
+          size="0.02 0.175" rgba="0.4 0.3 0.2 1"/>
+    <!-- Stack of blocks -->
+    <body name="block1" pos="0 0 0.395">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.035" rgba="0.9 0.2 0.2 1" mass="0.3"/>
+    </body>
+    <body name="block2" pos="0 0 0.465">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.035" rgba="0.2 0.75 0.3 1" mass="0.3"/>
+    </body>
+    <body name="block3" pos="0 0 0.535">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.035" rgba="0.2 0.35 0.9 1" mass="0.3"/>
+    </body>
+    <body name="block4" pos="0 0 0.605">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.035" rgba="0.9 0.85 0.15 1" mass="0.3"/>
+    </body>
+    <body name="block5" pos="0 0 0.675">
+      <freejoint/>
+      <geom type="box" size="0.06 0.06 0.035" rgba="0.75 0.2 0.8 1" mass="0.3"/>
+    </body>
+    <!-- Sphere to knock them over -->
+    <body name="cannonball" pos="-0.6 0 0.42">
+      <freejoint/>
+      <geom type="sphere" size="0.06" rgba="0.5 0.5 0.55 1" mass="2"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framepos name="block1_pos" objtype="body" objname="block1"/>
+    <framepos name="cannonball_pos" objtype="body" objname="cannonball"/>
+    <framelinvel name="cannonball_vel" objtype="body" objname="cannonball"/>
+  </sensor>
+</mujoco>
