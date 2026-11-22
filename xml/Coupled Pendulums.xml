@@ -1,0 +1,88 @@
+
+<mujoco model="coupled_pendulums">
+  <option gravity="0 0 -9.81" timestep="0.005"/>
+  <default>
+    <joint damping="0.08"/>
+    <geom friction="0.5 0.02 0.02"/>
+  </default>
+  <worldbody>
+    <light pos="0 0 5" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" rgba="0.2 0.2 0.25 1"/>
+    <body name="bar" pos="0 0 2">
+      <geom type="capsule" fromto="-0.8 0 0 0.8 0 0" size="0.02"
+            rgba="0.45 0.45 0.5 1" mass="5"/>
+      <body name="p1" pos="-0.6 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.015"
+              rgba="0.9 0.25 0.2 1" mass="0.3"/>
+        <geom name="bob1" type="sphere" pos="0 0 -0.8" size="0.04"
+              rgba="0.9 0.25 0.2 1" mass="0.5"/>
+        <site name="s1" pos="0 0 -0.8" rgba="0 0 0 0"/>
+      </body>
+      <body name="p2" pos="-0.3 0 0">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.015"
+              rgba="0.3 0.7 0.3 1" mass="0.3"/>
+        <geom name="bob2" type="sphere" pos="0 0 -0.8" size="0.04"
+              rgba="0.3 0.7 0.3 1" mass="0.5"/>
+        <site name="s2" pos="0 0 -0.8" rgba="0 0 0 0"/>
+      </body>
+      <body name="p3" pos="0 0 0">
+        <joint name="j3" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.015"
+              rgba="0.2 0.4 0.9 1" mass="0.3"/>
+        <geom name="bob3" type="sphere" pos="0 0 -0.8" size="0.04"
+              rgba="0.2 0.4 0.9 1" mass="0.5"/>
+        <site name="s3" pos="0 0 -0.8" rgba="0 0 0 0"/>
+      </body>
+      <body name="p4" pos="0.3 0 0">
+        <joint name="j4" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.015"
+              rgba="0.9 0.85 0.15 1" mass="0.3"/>
+        <geom name="bob4" type="sphere" pos="0 0 -0.8" size="0.04"
+              rgba="0.9 0.85 0.15 1" mass="0.5"/>
+        <site name="s4" pos="0 0 -0.8" rgba="0 0 0 0"/>
+      </body>
+      <body name="p5" pos="0.6 0 0">
+        <joint name="j5" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.015"
+              rgba="0.85 0.2 0.8 1" mass="0.3"/>
+        <geom name="bob5" type="sphere" pos="0 0 -0.8" size="0.04"
+              rgba="0.85 0.2 0.8 1" mass="0.5"/>
+        <site name="s5" pos="0 0 -0.8" rgba="0 0 0 0"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="spring12" stiffness="15" damping="0.5">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+    <spatial name="spring23" stiffness="15" damping="0.5">
+      <site site="s2"/>
+      <site site="s3"/>
+    </spatial>
+    <spatial name="spring34" stiffness="15" damping="0.5">
+      <site site="s3"/>
+      <site site="s4"/>
+    </spatial>
+    <spatial name="spring45" stiffness="15" damping="0.5">
+      <site site="s4"/>
+      <site site="s5"/>
+    </spatial>
+  </tendon>
+  <sensor>
+    <jointpos name="j1_pos" joint="j1"/>
+    <jointpos name="j2_pos" joint="j2"/>
+    <jointpos name="j3_pos" joint="j3"/>
+    <jointpos name="j4_pos" joint="j4"/>
+    <jointpos name="j5_pos" joint="j5"/>
+    <jointvel name="j1_vel" joint="j1"/>
+    <jointvel name="j2_vel" joint="j2"/>
+    <jointvel name="j3_vel" joint="j3"/>
+    <tendonpos name="spring12_len" tendon="spring12"/>
+    <tendonpos name="spring23_len" tendon="spring23"/>
+    <tendonpos name="spring34_len" tendon="spring34"/>
+    <tendonpos name="spring45_len" tendon="spring45"/>
+  </sensor>
+</mujoco>

@@ -1,0 +1,866 @@
+"""Body tree, watch panel, sensor panel, energy, keyframe, and contacts inspector panels."""
+
+import numpy as np
+from collections import deque
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QGroupBox,
+    QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
+    QHeaderView, QPushButton, QComboBox, QSpinBox, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox,
+)
+from PySide6.QtCore import Qt, Signal, QRect, QPoint
+from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QLinearGradient, QPolygon
+import mujoco
+from widgets import log
+from constants import SENSOR_TYPE_NAMES
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Body Tree Panel
+# ═══════════════════════════════════════════════════════════════
+
+class BodyTreePanel(QWidget):
+    focus_body = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Filter bodies…")
+        self.search_input.setProperty("class", "search")
+        self.search_input.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self.search_input)
+        layout.addLayout(search_row)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Filter:"))
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["All", "Joints", "No Children"])
+        self.filter_combo.setMaximumWidth(120)
+        self.filter_combo.currentIndexChanged.connect(self._apply_filter)
+        filter_row.addWidget(self.filter_combo)
+        filter_row.addStretch()
+        expand_btn = QPushButton("Expand All")
+        expand_btn.clicked.connect(lambda: self.tree.expandAll())
+        filter_row.addWidget(expand_btn)
+        collapse_btn = QPushButton("Collapse")
+        collapse_btn.clicked.connect(lambda: self.tree.collapseAll())
+        filter_row.addWidget(collapse_btn)
+        layout.addLayout(filter_row)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Body", "Joints", "Geoms", "Mass"])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setColumnWidth(0, 160)
+        self.tree.itemDoubleClicked.connect(self._on_double_click)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_context_menu)
+        layout.addWidget(self.tree)
+
+        self._model = None
+        self._all_items: dict = {}
+
+    def build(self, model):
+        self._model = model
+        self.tree.clear()
+        self._all_items = {}
+        if model is None:
+            return
+        items: dict[int, QTreeWidgetItem] = {}
+        for i in range(model.nbody):
+            name = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
+                or f"body_{i}"
+            )
+            parent = model.body_parentid[i]
+            njnt = sum(1 for j in range(model.njnt) if model.jnt_bodyid[j] == i)
+            ngeom = sum(1 for g in range(model.ngeom) if model.geom_bodyid[g] == i)
+            mass = float(model.body_mass[i])
+            item = QTreeWidgetItem([
+                name,
+                str(njnt) if njnt else "—",
+                str(ngeom) if ngeom else "—",
+                f"{mass:.2f}" if mass > 0.001 else "—",
+            ])
+            item.setData(0, Qt.UserRole, i)
+            if i == 0:
+                font = item.font(0)
+                font.setBold(True)
+                item.setFont(0, font)
+                for col in range(4):
+                    item.setForeground(col, QColor("#7aa2f7"))
+            if parent == -1 or parent not in items:
+                self.tree.addTopLevelItem(item)
+            else:
+                items[parent].addChild(item)
+            items[i] = item
+            self._all_items[i] = (name, njnt, ngeom, item)
+        self.tree.expandAll()
+
+    def _apply_filter(self):
+        search = self.search_input.text().strip().lower()
+        filter_mode = self.filter_combo.currentText()
+        for body_id, (name, njnt, ngeom, item) in self._all_items.items():
+            hidden = False
+            if search and search not in name.lower():
+                hidden = True
+            if filter_mode == "Joints" and njnt == 0:
+                hidden = True
+            elif filter_mode == "No Children":
+                has_child = any(
+                    self._model.body_parentid[bid] == body_id
+                    for bid in range(self._model.nbody)
+                ) if self._model else False
+                if has_child:
+                    hidden = True
+            item.setHidden(hidden)
+
+    def _on_double_click(self, item, column):
+        body_id = item.data(0, Qt.UserRole)
+        if body_id is not None and body_id > 0:
+            self.focus_body.emit(body_id)
+
+    def _on_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        body_id = item.data(0, Qt.UserRole)
+        if body_id is not None and body_id > 0:
+            self.focus_body.emit(body_id)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Watch Panel
+# ═══════════════════════════════════════════════════════════════
+
+class WatchPanel(QWidget):
+    """User-configurable variable watcher (qpos, qvel, ctrl, act, sensordata)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._model, self._data = None, None
+        self._watches: list[tuple[str, int, str]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        add_row = QHBoxLayout()
+        add_row.addWidget(QLabel("Add:"))
+        self.cat_combo = QComboBox()
+        self.cat_combo.addItems(["qpos", "qvel", "ctrl", "act", "sensordata"])
+        add_row.addWidget(self.cat_combo)
+        add_row.addWidget(QLabel("Idx:"))
+        self.idx_spin = QSpinBox()
+        self.idx_spin.setRange(0, 9999)
+        self.idx_spin.setValue(0)
+        self.idx_spin.setFixedWidth(60)
+        add_row.addWidget(self.idx_spin)
+        add_btn = QPushButton("+ Add")
+        add_btn.clicked.connect(self._add_watch)
+        add_row.addWidget(add_btn)
+        clear_btn = QPushButton("Clear All")
+        clear_btn.clicked.connect(self._clear_watches)
+        add_row.addWidget(clear_btn)
+        layout.addLayout(add_row)
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Quick:"))
+        btn_qpos = QPushButton("All qpos")
+        btn_qpos.clicked.connect(self._add_all_qpos)
+        preset_row.addWidget(btn_qpos)
+        btn_ctrl = QPushButton("All ctrl")
+        btn_ctrl.clicked.connect(self._add_all_ctrl)
+        preset_row.addWidget(btn_ctrl)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+
+        self.watch_table = QTableWidget()
+        self.watch_table.setColumnCount(3)
+        self.watch_table.setHorizontalHeaderLabels(["Variable", "Value", ""])
+        self.watch_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.watch_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.watch_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.watch_table.setColumnWidth(2, 30)
+        self.watch_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.watch_table.setAlternatingRowColors(True)
+        self.watch_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.watch_table)
+        layout.addStretch()
+
+    def build(self, model, data):
+        self._model, self._data = model, data
+
+    def _add_watch(self):
+        cat = self.cat_combo.currentText()
+        idx = self.idx_spin.value()
+        if any(w[0] == cat and w[1] == idx for w in self._watches):
+            return
+        label = f"{cat}[{idx}]"
+        self._watches.append((cat, idx, label))
+        self._rebuild_table()
+
+    def _add_all_qpos(self):
+        if self._data is None:
+            return
+        for i in range(len(self._data.qpos)):
+            if not any(w[0] == "qpos" and w[1] == i for w in self._watches):
+                self._watches.append(("qpos", i, f"qpos[{i}]"))
+        self._rebuild_table()
+
+    def _add_all_ctrl(self):
+        if self._data is None:
+            return
+        for i in range(len(self._data.ctrl)):
+            if not any(w[0] == "ctrl" and w[1] == i for w in self._watches):
+                self._watches.append(("ctrl", i, f"ctrl[{i}]"))
+        self._rebuild_table()
+
+    def _clear_watches(self):
+        self._watches.clear()
+        self.watch_table.setRowCount(0)
+
+    def _rebuild_table(self):
+        self.watch_table.setRowCount(len(self._watches))
+        for i, (cat, idx, label) in enumerate(self._watches):
+            name_item = QTableWidgetItem(label)
+            name_item.setForeground(QColor("#7aa2f7"))
+            self.watch_table.setItem(i, 0, name_item)
+            self.watch_table.setItem(i, 1, QTableWidgetItem("—"))
+            remove_btn = QPushButton("✕")
+            remove_btn.setFixedWidth(26)
+            remove_btn.clicked.connect(lambda checked, row=i: self._remove_watch(row))
+            self.watch_table.setCellWidget(i, 2, remove_btn)
+
+    def _remove_watch(self, row):
+        if 0 <= row < len(self._watches):
+            self._watches.pop(row)
+            self._rebuild_table()
+
+    def refresh(self):
+        if self._data is None:
+            return
+        for i, (cat, idx, label) in enumerate(self._watches):
+            try:
+                arr = getattr(self._data, cat, None)
+                if arr is not None and idx < len(arr):
+                    val = float(arr[idx])
+                    item = self.watch_table.item(i, 1)
+                    if item:
+                        if np.isnan(val):
+                            item.setText("NaN")
+                            item.setForeground(QColor("#f7768e"))
+                        elif np.isinf(val):
+                            item.setText("Inf")
+                            item.setForeground(QColor("#f7768e"))
+                        else:
+                            item.setText(f"{val:.6f}")
+                            item.setForeground(QColor("#c0caf5"))
+            except Exception:
+                pass
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Sensor Panel
+# ═══════════════════════════════════════════════════════════════
+
+class SensorPanel(QWidget):
+    """Sensor data viewer using the shared SENSOR_TYPE_NAMES from constants."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Sensor", "Type", "Value"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.setColumnWidth(1, 110)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+        self._nsensor = 0
+        self._sensor_adr: list[int] = []
+        self._sensor_dim: list[int] = []
+
+    def build(self, model, data):
+        if model is None:
+            self.table.setRowCount(0)
+            return
+        self._nsensor = model.nsensor
+        self._sensor_adr = []
+        self._sensor_dim = []
+        self.table.setRowCount(self._nsensor)
+        for i in range(self._nsensor):
+            name = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_SENSOR, i)
+                or f"sensor_{i}"
+            )
+            stype = int(model.sensor_type[i])
+            type_name = SENSOR_TYPE_NAMES.get(stype, f"type_{stype}")
+            dim = int(model.sensor_dim[i])
+            self._sensor_adr.append(int(model.sensor_adr[i]))
+            self._sensor_dim.append(dim)
+            name_item = QTableWidgetItem(name)
+            name_item.setForeground(QColor("#7aa2f7"))
+            type_item = QTableWidgetItem(type_name)
+            type_item.setForeground(QColor("#565f89"))
+            self.table.setItem(i, 0, name_item)
+            self.table.setItem(i, 1, type_item)
+            self.table.setItem(i, 2, QTableWidgetItem("—"))
+
+    def refresh(self, data):
+        if data is None or not self._sensor_adr:
+            return
+        for i in range(self._nsensor):
+            try:
+                adr = self._sensor_adr[i]
+                dim = self._sensor_dim[i]
+                item = self.table.item(i, 2)
+                if item is None:
+                    continue
+                if dim == 1:
+                    val = float(data.sensordata[adr])
+                    if np.isnan(val):
+                        item.setText("NaN")
+                        item.setForeground(QColor("#f7768e"))
+                    elif np.isinf(val):
+                        item.setText("Inf")
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setText(f"{val:.4f}")
+                        item.setForeground(QColor("#c0caf5"))
+                elif dim <= 3:
+                    vals = []
+                    has_nan = False
+                    has_inf = False
+                    for j in range(dim):
+                        v = float(data.sensordata[adr + j])
+                        if np.isnan(v):
+                            vals.append("NaN")
+                            has_nan = True
+                        elif np.isinf(v):
+                            vals.append("Inf")
+                            has_inf = True
+                        else:
+                            vals.append(f"{v:.4f}")
+                    val = f"({', '.join(vals)})"
+                    item.setText(val)
+                    if has_nan or has_inf:
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setForeground(QColor("#c0caf5"))
+                else:
+                    raw = data.sensordata[adr:adr + dim]
+                    if np.any(np.isnan(raw)) or np.any(np.isinf(raw)):
+                        item.setText(f"[{dim} values — NaN/Inf]")
+                        item.setForeground(QColor("#f7768e"))
+                    else:
+                        item.setText(f"[{dim} values]")
+                        item.setForeground(QColor("#9ece6a"))
+            except Exception:
+                pass
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Energy Panel
+# ═══════════════════════════════════════════════════════════════
+
+class EnergyPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self.kinetic_lbl = QLabel("0.0 J")
+        self.kinetic_lbl.setProperty("class", "value")
+        self.kinetic_bar = EnergyBar()
+
+        self.potential_lbl = QLabel("0.0 J")
+        self.potential_lbl.setProperty("class", "value")
+        self.potential_bar = EnergyBar()
+
+        self.total_lbl = QLabel("0.0 J")
+        self.total_lbl.setProperty("class", "value")
+        self.total_bar = EnergyBar()
+
+        gk = QGroupBox("Kinetic Energy")
+        gkl = QVBoxLayout(gk)
+        gkl.addWidget(self.kinetic_lbl)
+        gkl.addWidget(self.kinetic_bar)
+
+        gp = QGroupBox("Potential Energy")
+        gpl = QVBoxLayout(gp)
+        gpl.addWidget(self.potential_lbl)
+        gpl.addWidget(self.potential_bar)
+
+        gt = QGroupBox("Total Energy")
+        gtl = QVBoxLayout(gt)
+        gtl.addWidget(self.total_lbl)
+        gtl.addWidget(self.total_bar)
+
+        layout.addWidget(gk)
+        layout.addWidget(gp)
+        layout.addWidget(gt)
+
+        self._history_graph = EnergyHistoryGraph()
+        layout.addWidget(self._history_graph)
+        layout.addStretch()
+
+    def refresh(self, model, data):
+        if model is None or data is None:
+            return
+        try:
+            if not (model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_ENERGY):
+                model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
+                mujoco.mj_forward(model, data)
+            ke, pe = float(data.energy[0]), float(data.energy[1])
+
+            if not (np.isfinite(ke) and np.isfinite(pe)):
+                self.kinetic_lbl.setText("NaN" if np.isnan(ke) else f"{ke:.3f} J")
+                self.potential_lbl.setText("NaN" if np.isnan(pe) else f"{pe:.3f} J")
+                self.total_lbl.setText("—")
+                return
+
+            total = ke + pe
+            self.kinetic_lbl.setText(f"{ke:.3f} J")
+            self.potential_lbl.setText(f"{pe:.3f} J")
+            self.total_lbl.setText(f"{total:.3f} J")
+            max_e = max(abs(ke), abs(pe), abs(total), 1.0) * 1.2
+            self.kinetic_bar.set_value(ke, max_e, "#f7768e")
+            self.potential_bar.set_value(pe, max_e, "#7aa2f7")
+            self.total_bar.set_value(total, max_e, "#9ece6a")
+            self._history_graph.add_data(ke, pe, total)
+        except Exception:
+            pass
+
+
+class EnergyBar(QWidget):
+    """Custom-painted energy bar that's visible on dark themes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(22)
+        self._value = 0.0
+        self._max = 1.0
+        self._color = "#7aa2f7"
+
+    def set_value(self, value, max_val, color):
+        self._value = value
+        self._max = max(max_val, 0.001)
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            w, h = self.width(), self.height()
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#16161e")))
+            painter.drawRoundedRect(0, 0, w, h, 4, 4)
+
+            painter.setPen(QPen(QColor("#3b4261"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(0, 0, w - 1, h - 1, 4, 4)
+
+            cx = w // 2
+            painter.setPen(QPen(QColor("#3b4261"), 1, Qt.DashLine))
+            painter.drawLine(cx, 2, cx, h - 2)
+
+            if self._max > 0:
+                ratio = np.clip(self._value / self._max, -1, 1)
+                bar_color = QColor(self._color)
+                bar_color.setAlpha(200)
+                if ratio >= 0:
+                    bar_w = int(ratio * (w // 2))
+                    grad = QLinearGradient(cx, 0, cx + bar_w, 0)
+                    grad.setColorAt(0, bar_color)
+                    lighter = QColor(bar_color)
+                    lighter.setAlpha(120)
+                    grad.setColorAt(1, lighter)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(grad))
+                    painter.drawRoundedRect(cx, 2, max(bar_w, 1), h - 4, 2, 2)
+                else:
+                    bar_w = int(abs(ratio) * (w // 2))
+                    grad = QLinearGradient(cx, 0, cx - bar_w, 0)
+                    grad.setColorAt(0, bar_color)
+                    lighter = QColor(bar_color)
+                    lighter.setAlpha(120)
+                    grad.setColorAt(1, lighter)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(grad))
+                    painter.drawRoundedRect(cx - bar_w, 2, max(bar_w, 1), h - 4, 2, 2)
+
+            painter.setPen(QColor("#e0e4f0"))
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            text = f"{self._value:.2f} J"
+            painter.drawText(self.rect(), Qt.AlignCenter, text)
+        finally:
+            painter.end()
+
+
+class EnergyHistoryGraph(QWidget):
+    """Sparkline graph of kinetic, potential, and total energy over time."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(140)
+        self._ke: deque = deque(maxlen=300)
+        self._pe: deque = deque(maxlen=300)
+        self._total: deque = deque(maxlen=300)
+
+    def add_data(self, ke, pe, total):
+        if np.isfinite(ke) and np.isfinite(pe) and np.isfinite(total):
+            self._ke.append(ke)
+            self._pe.append(pe)
+            self._total.append(total)
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            w, h = self.width(), self.height()
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#0d0e16")))
+            painter.drawRoundedRect(0, 0, w, h, 6, 6)
+
+            painter.setPen(QPen(QColor("#2a2f45"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(0, 0, w - 1, h - 1, 6, 6)
+
+            margin_t, margin_b, margin_l, margin_r = 20, 20, 8, 8
+            plot_w = w - margin_l - margin_r
+            plot_h = h - margin_t - margin_b
+
+            if len(self._total) < 2:
+                painter.setPen(QColor("#565f89"))
+                painter.setFont(QFont("Consolas", 9))
+                painter.drawText(self.rect(), Qt.AlignCenter, "Energy history")
+                return
+
+            all_vals = list(self._ke) + list(self._pe) + list(self._total)
+            min_v, max_v = min(all_vals), max(all_vals)
+            span = max_v - min_v if max_v != min_v else 1.0
+            min_v -= span * 0.05
+            max_v += span * 0.05
+            span = max_v - min_v
+
+            painter.setPen(QPen(QColor("#1e2235"), 1, Qt.DotLine))
+            for i in range(4):
+                y = margin_t + int(i * plot_h / 3)
+                painter.drawLine(margin_l, y, w - margin_r, y)
+
+            if min_v < 0 < max_v:
+                y0 = margin_t + int(((max_v - 0) / span) * plot_h)
+                painter.setPen(QPen(QColor("#3b4261"), 1, Qt.DashLine))
+                painter.drawLine(margin_l, y0, w - margin_r, y0)
+
+            painter.setFont(QFont("Consolas", 7))
+            painter.setPen(QColor("#565f89"))
+            for i, val in enumerate([max_v, (max_v + min_v) / 2, min_v]):
+                y = margin_t + int(i * plot_h / 2)
+                painter.drawText(margin_l + 2, y - 2, f"{val:.1f}")
+
+            for data, color_hex, fill_alpha in [
+                (self._ke, "#f7768e", 30),
+                (self._pe, "#7aa2f7", 25),
+                (self._total, "#9ece6a", 20),
+            ]:
+                n = len(data)
+                dx = plot_w / max(n - 1, 1)
+                points = []
+                for i, v in enumerate(data):
+                    x = margin_l + int(i * dx)
+                    y = margin_t + int(((max_v - v) / span) * plot_h)
+                    points.append((x, y))
+
+                color = QColor(color_hex)
+                fill_color = QColor(color)
+                fill_color.setAlpha(fill_alpha)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(fill_color))
+                poly = QPolygon()
+                poly.append(QPoint(points[0][0], points[0][1]))
+                for px, py in points[1:]:
+                    poly.append(QPoint(px, py))
+                poly.append(QPoint(points[-1][0], margin_t + plot_h))
+                poly.append(QPoint(points[0][0], margin_t + plot_h))
+                painter.drawPolygon(poly)
+
+                painter.setPen(QPen(QColor(color_hex), 1.8))
+                for i in range(len(points) - 1):
+                    painter.drawLine(points[i][0], points[i][1],
+                                     points[i + 1][0], points[i + 1][1])
+
+            painter.setFont(QFont("Consolas", 8, QFont.Bold))
+            legend_x = margin_l + 4
+            for label, color_hex in [("KE", "#f7768e"), ("PE", "#7aa2f7"), ("Tot", "#9ece6a")]:
+                painter.setPen(QColor(color_hex))
+                painter.fillRect(legend_x, 6, 12, 8, QColor(color_hex))
+                painter.drawText(legend_x + 16, 14, label)
+                legend_x += 50
+        finally:
+            painter.end()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Contacts Panel
+# ═══════════════════════════════════════════════════════════════
+
+class ContactsPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        header_row = QHBoxLayout()
+        self.count_lbl = QLabel("0 contacts")
+        self.count_lbl.setProperty("class", "dim")
+        header_row.addWidget(self.count_lbl)
+        header_row.addStretch()
+        self.auto_refresh_cb = QComboBox()
+        self.auto_refresh_cb.addItems(["Auto", "Every 5s", "Manual"])
+        self.auto_refresh_cb.setMaximumWidth(100)
+        header_row.addWidget(self.auto_refresh_cb)
+        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn.setFixedWidth(80)
+        refresh_btn.clicked.connect(lambda: setattr(self, '_force_refresh_flag', True))
+        header_row.addWidget(refresh_btn)
+        layout.addLayout(header_row)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Geom 1", "Geom 2", "Distance", "Force", "Normal"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        self._refresh_counter = 0
+        self._force_refresh_flag = False
+
+    def refresh(self, model, data):
+        if model is None or data is None:
+            return
+
+        mode = self.auto_refresh_cb.currentText()
+        if mode == "Manual" and not self._force_refresh_flag:
+            return
+        if mode == "Every 5s":
+            self._refresh_counter += 1
+            if self._refresh_counter % 300 != 0 and not self._force_refresh_flag:
+                return
+
+        self._force_refresh_flag = False
+        ncon = data.ncon
+        self.count_lbl.setText(f"{ncon} contact{'s' if ncon != 1 else ''}")
+        self.table.setRowCount(ncon)
+        for i in range(ncon):
+            c = data.contact[i]
+            g1_name = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1)
+                or f"geom_{c.geom1}"
+            )
+            g2_name = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2)
+                or f"geom_{c.geom2}"
+            )
+            g1_item = QTableWidgetItem(g1_name)
+            g1_item.setForeground(QColor("#7aa2f7"))
+            g2_item = QTableWidgetItem(g2_name)
+            g2_item.setForeground(QColor("#7aa2f7"))
+            self.table.setItem(i, 0, g1_item)
+            self.table.setItem(i, 1, g2_item)
+
+            dist_val = float(c.dist)
+            if np.isnan(dist_val) or np.isinf(dist_val):
+                dist_item = QTableWidgetItem("NaN" if np.isnan(dist_val) else "Inf")
+                dist_item.setForeground(QColor("#f7768e"))
+            else:
+                dist_item = QTableWidgetItem(f"{dist_val:.5f}")
+                if dist_val < 0:
+                    dist_item.setForeground(QColor("#f7768e"))
+                    dist_item.setFont(QFont("Consolas", 9, QFont.Bold))
+                elif dist_val < 0.001:
+                    dist_item.setForeground(QColor("#e0af68"))
+                else:
+                    dist_item.setForeground(QColor("#9ece6a"))
+            self.table.setItem(i, 2, dist_item)
+
+            try:
+                force = np.zeros(6)
+                mujoco.mj_contactForce(model, data, i, force)
+                f_norm = float(np.linalg.norm(force[:3]))
+                if np.isnan(f_norm) or np.isinf(f_norm):
+                    force_item = QTableWidgetItem("NaN" if np.isnan(f_norm) else "Inf")
+                    force_item.setForeground(QColor("#f7768e"))
+                else:
+                    force_item = QTableWidgetItem(f"{f_norm:.2f}")
+                    if f_norm > 100:
+                        force_item.setForeground(QColor("#f7768e"))
+                        force_item.setFont(QFont("Consolas", 9, QFont.Bold))
+                    elif f_norm > 10:
+                        force_item.setForeground(QColor("#e0af68"))
+                    else:
+                        force_item.setForeground(QColor("#c0caf5"))
+                self.table.setItem(i, 3, force_item)
+                normal = c.frame[:3]
+                if np.all(np.isfinite(normal)):
+                    n_item = QTableWidgetItem(
+                        f"({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f})"
+                    )
+                    n_item.setForeground(QColor("#9ece6a"))
+                    self.table.setItem(i, 4, n_item)
+                else:
+                    self.table.setItem(i, 4, QTableWidgetItem("—"))
+            except Exception:
+                self.table.setItem(i, 3, QTableWidgetItem("—"))
+                self.table.setItem(i, 4, QTableWidgetItem("—"))
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Keyframe Panel
+# ═══════════════════════════════════════════════════════════════
+
+class KeyframePanel(QWidget):
+    """Save and restore simulation keyframes (qpos, qvel, ctrl)."""
+
+    load_keyframe = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._model, self._data = None, None
+        self._keyframes: dict[str, dict] = {}
+        self._lock = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        save_row = QHBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Keyframe name…")
+        save_row.addWidget(self.name_input)
+        save_btn = QPushButton("💾 Save")
+        save_btn.setProperty("class", "success")
+        save_btn.clicked.connect(self._save_keyframe)
+        save_row.addWidget(save_btn)
+        layout.addLayout(save_row)
+
+        self.kf_list = QListWidget()
+        self.kf_list.setAlternatingRowColors(True)
+        self.kf_list.itemDoubleClicked.connect(self._on_load)
+        layout.addWidget(self.kf_list)
+
+        action_row = QHBoxLayout()
+        load_btn = QPushButton("📂 Load Selected")
+        load_btn.clicked.connect(lambda: self._on_load(self.kf_list.currentItem()))
+        action_row.addWidget(load_btn)
+        del_btn = QPushButton("🗑 Delete")
+        del_btn.setProperty("class", "danger")
+        del_btn.clicked.connect(self._delete_selected)
+        action_row.addWidget(del_btn)
+        clear_btn = QPushButton("Clear All")
+        clear_btn.clicked.connect(self._clear_all)
+        action_row.addWidget(clear_btn)
+        layout.addLayout(action_row)
+        layout.addStretch()
+
+    def set_lock(self, lock):
+        self._lock = lock
+
+    def build(self, model, data):
+        self._model, self._data = model, data
+        if self._keyframes and model is not None:
+            nq = model.nq
+            for name, kf in list(self._keyframes.items()):
+                if len(kf.get("qpos", [])) != nq:
+                    log.warning(f"Keyframe '{name}' may be incompatible with new model")
+
+    def _save_keyframe(self):
+        if self._data is None:
+            return
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"KF_{len(self._keyframes) + 1}"
+        if name in self._keyframes:
+            reply = QMessageBox.question(
+                self, "Overwrite?", f"Keyframe '{name}' exists. Overwrite?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+
+        if self._lock:
+            self._lock.acquire()
+        try:
+            qpos = self._data.qpos.copy()
+            qvel = self._data.qvel.copy()
+            ctrl = self._data.ctrl.copy()
+            sim_time = float(self._data.time)
+        finally:
+            if self._lock:
+                self._lock.release()
+
+        self._keyframes[name] = {
+            "qpos": qpos,
+            "qvel": qvel,
+            "ctrl": ctrl,
+            "time": sim_time,
+        }
+        self._rebuild_list()
+        self.name_input.clear()
+        log.info(f"Keyframe saved: {name}")
+
+    def _on_load(self, item):
+        if item is None or self._data is None:
+            return
+        name = item.text().split("  ")[0]
+        if name not in self._keyframes:
+            return
+        kf = self._keyframes[name]
+        if self._lock:
+            self._lock.acquire()
+        try:
+            if len(kf["qpos"]) == len(self._data.qpos):
+                self._data.qpos[:] = kf["qpos"]
+            if len(kf["qvel"]) == len(self._data.qvel):
+                self._data.qvel[:] = kf["qvel"]
+            if len(kf["ctrl"]) == len(self._data.ctrl):
+                self._data.ctrl[:] = kf["ctrl"]
+        finally:
+            if self._lock:
+                self._lock.release()
+        self.load_keyframe.emit(kf)
+        log.info(f"Keyframe loaded: {name}")
+
+    def _delete_selected(self):
+        item = self.kf_list.currentItem()
+        if item is None:
+            return
+        name = item.text().split("  ")[0]
+        if name in self._keyframes:
+            del self._keyframes[name]
+            self._rebuild_list()
+
+    def _clear_all(self):
+        self._keyframes.clear()
+        self._rebuild_list()
+
+    def _rebuild_list(self):
+        self.kf_list.clear()
+        for name, kf in self._keyframes.items():
+            item = QListWidgetItem(f"{name}  (t={kf['time']:.2f}s)")
+            item.setForeground(QColor("#c0caf5"))
+            self.kf_list.addItem(item)

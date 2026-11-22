@@ -1,0 +1,61 @@
+
+<mujoco model="demo_scene">
+  <option timestep="0.005" gravity="0 0 -9.81"/>
+  <default><joint damping="0.5"/><geom friction="0.8 0.02 0.02"/></default>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1="0.35 0.35 0.35" rgb2="0.2 0.2 0.2"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 5" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="grid"/>
+    <body name="pendulum_base" pos="0 0 2.5">
+      <joint name="pend1" type="hinge" axis="0 1 0" damping="0.2"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" rgba="0.85 0.35 0.15 1" mass="0.5"/>
+      <body name="pend_mid" pos="0 0 -1">
+        <joint name="pend2" type="hinge" axis="0 1 0" damping="0.1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.8" size="0.04" rgba="0.2 0.4 0.85 1" mass="0.3"/>
+        <geom name="pend_bob" type="sphere" pos="0 0 -0.8" size="0.1" rgba="1 0.75 0.1 1" mass="1"/>
+      </body>
+    </body>
+    <body name="arm_base" pos="2.5 0 0.3">
+      <joint name="arm_yaw" type="hinge" axis="0 0 1" damping="2"/>
+      <geom type="cylinder" size="0.12 0.15" rgba="0.45 0.45 0.5 1"/>
+      <body name="arm_shoulder" pos="0 0 0.3">
+        <joint name="arm_pitch" type="hinge" axis="0 1 0" range="-90 45" damping="1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.7" size="0.06" rgba="0.85 0.6 0.2 1"/>
+        <body name="arm_elbow" pos="0 0 0.7">
+          <joint name="arm_elbow" type="hinge" axis="0 1 0" range="-135 0" damping="0.5"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.55" size="0.05" rgba="0.85 0.6 0.2 1"/>
+          <body name="arm_wrist" pos="0 0 0.55">
+            <joint name="arm_wrist" type="hinge" axis="0 0 1" damping="0.3"/>
+            <geom type="sphere" size="0.06" rgba="0.3 0.3 0.35 1"/>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="cart" pos="-2.5 0 0.25">
+      <joint name="cart_x" type="slide" axis="1 0 0" range="-2 2" damping="0.5"/>
+      <geom type="box" size="0.25 0.15 0.1" rgba="0.7 0.7 0.25 1" mass="1"/>
+      <body name="pole" pos="0 0 0.1">
+        <joint name="pole_hinge" type="hinge" axis="0 1 0" damping="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.8" size="0.03" rgba="0.9 0.5 0.2 1" mass="0.3"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator><motor name="cart_force" joint="cart_x" ctrlrange="-50 50" ctrllimited="true"/></actuator>
+  <sensor>
+    <jointpos name="pend1_pos" joint="pend1"/>
+    <jointvel name="pend1_vel" joint="pend1"/>
+    <jointpos name="pend2_pos" joint="pend2"/>
+    <jointvel name="pend2_vel" joint="pend2"/>
+    <jointpos name="cart_pos" joint="cart_x"/>
+    <jointvel name="cart_vel" joint="cart_x"/>
+    <jointpos name="pole_angle" joint="pole_hinge"/>
+    <jointvel name="pole_vel" joint="pole_hinge"/>
+    <actuatorpos name="cart_act_pos" actuator="cart_force"/>
+    <actuatorfrc name="cart_act_frc" actuator="cart_force"/>
+    <framepos name="pend_bob_pos" objtype="geom" objname="pend_bob"/>
+    <framepos name="arm_wrist_pos" objtype="body" objname="arm_wrist"/>
+  </sensor>
+</mujoco>

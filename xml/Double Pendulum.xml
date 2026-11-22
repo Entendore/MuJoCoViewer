@@ -1,0 +1,44 @@
+
+<mujoco model="double_pendulum">
+  <option gravity="0 0 -9.81" timestep="0.005"/>
+  <default>
+    <joint damping="0.03" armature="0.01"/>
+    <geom friction="0.5 0.02 0.02"/>
+  </default>
+  <asset>
+    <texture name="floor_tex" type="2d" builtin="checker" width="256" height="256"
+             rgb1="0.18 0.18 0.22" rgb2="0.12 0.12 0.15"/>
+    <material name="floor_mat" texture="floor_tex" texrepeat="4 4"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 5" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="floor_mat"/>
+    <body name="pillar" pos="0 0 1.8">
+      <geom type="cylinder" size="0.05 1.8" rgba="0.45 0.45 0.5 1" mass="3"/>
+      <body name="arm1" pos="0 0 0">
+        <joint name="j1" type="hinge" axis="0 1 0" damping="0.02"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.85" size="0.035"
+              rgba="0.9 0.3 0.2 1" mass="1"/>
+        <body name="arm2" pos="0 0 -0.85">
+          <joint name="j2" type="hinge" axis="0 1 0" damping="0.01"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.65" size="0.03"
+                rgba="0.2 0.5 0.9 1" mass="0.6"/>
+          <geom name="bob" type="sphere" pos="0 0 -0.65" size="0.07"
+                rgba="1 0.85 0.1 1" mass="1.5"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="perturb1" joint="j1" ctrlrange="-5 5" ctrllimited="true"/>
+    <motor name="perturb2" joint="j2" ctrlrange="-3 3" ctrllimited="true"/>
+  </actuator>
+  <sensor>
+    <jointpos name="j1_pos" joint="j1"/>
+    <jointvel name="j1_vel" joint="j1"/>
+    <jointpos name="j2_pos" joint="j2"/>
+    <jointvel name="j2_vel" joint="j2"/>
+    <framepos name="bob_pos" objtype="geom" objname="bob"/>
+    <framelinvel name="bob_vel" objtype="geom" objname="bob"/>
+  </sensor>
+</mujoco>

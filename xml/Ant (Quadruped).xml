@@ -1,0 +1,66 @@
+
+<mujoco model="ant">
+  <option gravity="0 0 -9.81" timestep="0.01"/>
+  <default><geom friction="0.8 0.005 0.0001"/></default>
+  <worldbody>
+    <light pos="0 0 5"/><geom name="floor" type="plane" size="5 5 0.1" rgba="0.3 0.3 0.3 1"/>
+    <body name="torso" pos="0 0 0.75">
+      <freejoint/>
+      <geom type="sphere" size="0.25" rgba="0.9 0.2 0.2 1"/>
+      <body name="leg1_1" pos="0.2 0.2 0">
+        <joint name="hip_1" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom type="capsule" size="0.05" fromto="0 0 0 0.2 0.2 -0.2" rgba="0.2 0.2 0.9 1"/>
+        <body name="leg1_2" pos="0.2 0.2 -0.2">
+          <joint name="ankle_1" type="hinge" axis="0 1 0" range="-30 70"/>
+          <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" rgba="0.2 0.2 0.9 1"/>
+        </body>
+      </body>
+      <body name="leg2_1" pos="-0.2 0.2 0">
+        <joint name="hip_2" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom type="capsule" size="0.05" fromto="0 0 0 -0.2 0.2 -0.2" rgba="0.2 0.9 0.2 1"/>
+        <body name="leg2_2" pos="-0.2 0.2 -0.2">
+          <joint name="ankle_2" type="hinge" axis="0 1 0" range="-30 70"/>
+          <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" rgba="0.2 0.9 0.2 1"/>
+        </body>
+      </body>
+      <body name="leg3_1" pos="0.2 -0.2 0">
+        <joint name="hip_3" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom type="capsule" size="0.05" fromto="0 0 0 0.2 -0.2 -0.2" rgba="0.9 0.9 0.2 1"/>
+        <body name="leg3_2" pos="0.2 -0.2 -0.2">
+          <joint name="ankle_3" type="hinge" axis="0 1 0" range="-30 70"/>
+          <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" rgba="0.9 0.9 0.2 1"/>
+        </body>
+      </body>
+      <body name="leg4_1" pos="-0.2 -0.2 0">
+        <joint name="hip_4" type="hinge" axis="0 0 1" range="-40 40"/>
+        <geom type="capsule" size="0.05" fromto="0 0 0 -0.2 -0.2 -0.2" rgba="0.9 0.2 0.9 1"/>
+        <body name="leg4_2" pos="-0.2 -0.2 -0.2">
+          <joint name="ankle_4" type="hinge" axis="0 1 0" range="-30 70"/>
+          <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.3" rgba="0.9 0.2 0.9 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="hip_1" joint="hip_1" ctrlrange="-1 1"/>
+    <motor name="ankle_1" joint="ankle_1" ctrlrange="-1 1"/>
+    <motor name="hip_2" joint="hip_2" ctrlrange="-1 1"/>
+    <motor name="ankle_2" joint="ankle_2" ctrlrange="-1 1"/>
+    <motor name="hip_3" joint="hip_3" ctrlrange="-1 1"/>
+    <motor name="ankle_3" joint="ankle_3" ctrlrange="-1 1"/>
+    <motor name="hip_4" joint="hip_4" ctrlrange="-1 1"/>
+    <motor name="ankle_4" joint="ankle_4" ctrlrange="-1 1"/>
+  </actuator>
+  <sensor>
+    <jointpos name="hip_1_pos" joint="hip_1"/>
+    <jointpos name="hip_2_pos" joint="hip_2"/>
+    <jointpos name="hip_3_pos" joint="hip_3"/>
+    <jointpos name="hip_4_pos" joint="hip_4"/>
+    <actuatorfrc name="hip_1_frc" actuator="hip_1"/>
+    <actuatorfrc name="hip_2_frc" actuator="hip_2"/>
+    <actuatorfrc name="hip_3_frc" actuator="hip_3"/>
+    <actuatorfrc name="hip_4_frc" actuator="hip_4"/>
+    <framepos name="torso_pos" objtype="body" objname="torso"/>
+    <framelinvel name="torso_vel" objtype="body" objname="torso"/>
+  </sensor>
+</mujoco>
